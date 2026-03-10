@@ -62,3 +62,90 @@ export function hslToRgb(h: number, s: number, l: number): [number, number, numb
 export function lerp(a: number, b: number, t: number): number {
   return a + (b - a) * t;
 }
+
+/**
+ * Beat/transient detection engine.
+ * Tracks per-band spectral flux and produces beat pulse values
+ * that spike on transients and decay quickly.
+ */
+export class BeatDetector {
+  // Previous frame's band energies for flux calculation
+  private prevBands = { subBass: 0, bass: 0, mids: 0, highs: 0, air: 0 };
+
+  // Rolling average of band energies for adaptive thresholding
+  private avgBands = { subBass: 0, bass: 0, mids: 0, highs: 0, air: 0 };
+
+  // Beat pulse values (spike on onset, fast decay)
+  pulse = { subBass: 0, bass: 0, mids: 0, highs: 0, air: 0, combined: 0 };
+
+  // Envelope-followed energies (fast attack, slow release)
+  energy = { subBass: 0, bass: 0, mids: 0, highs: 0, air: 0 };
+
+  // Onset flags — true on the frame a beat is detected
+  onset = { subBass: false, bass: false, mids: false, highs: false, air: false, any: false };
+
+  // Configurable thresholds
+  private onsetThreshold = 1.4;  // current must be this * average to trigger
+  private pulseDecay = 0.85;     // how fast pulse decays (lower = faster)
+  private avgSmoothing = 0.96;   // rolling average smoothing (higher = longer memory)
+  private attackSpeed = 0.5;     // envelope attack (higher = faster)
+  private releaseSpeed = 0.92;   // envelope release (higher = slower)
+
+  update(bins: number[], sensitivity: number) {
+    const raw = {
+      subBass: getBandEnergy(bins, BANDS.subBass) * sensitivity,
+      bass: getBandEnergy(bins, BANDS.bass) * sensitivity,
+      mids: getBandEnergy(bins, BANDS.mids) * sensitivity,
+      highs: getBandEnergy(bins, BANDS.highs) * sensitivity,
+      air: getBandEnergy(bins, BANDS.air) * sensitivity,
+    };
+
+    // Reset onset flags
+    this.onset.subBass = false;
+    this.onset.bass = false;
+    this.onset.mids = false;
+    this.onset.highs = false;
+    this.onset.air = false;
+    this.onset.any = false;
+
+    const bandKeys = ['subBass', 'bass', 'mids', 'highs', 'air'] as const;
+
+    for (const key of bandKeys) {
+      // Spectral flux: positive difference from previous frame
+      const flux = Math.max(0, raw[key] - this.prevBands[key]);
+
+      // Update rolling average
+      this.avgBands[key] = this.avgBands[key] * this.avgSmoothing + raw[key] * (1 - this.avgSmoothing);
+
+      // Onset detection: current energy significantly above rolling average
+      const threshold = Math.max(this.avgBands[key] * this.onsetThreshold, 0.05);
+      if (flux > threshold * 0.5 && raw[key] > threshold) {
+        this.onset[key] = true;
+        this.onset.any = true;
+        // Spike pulse to flux intensity (clamped)
+        this.pulse[key] = Math.min(1.0, flux * 4 + 0.3);
+      } else {
+        // Decay pulse
+        this.pulse[key] *= this.pulseDecay;
+      }
+
+      // Asymmetric envelope follower: fast attack, slow release
+      if (raw[key] > this.energy[key]) {
+        this.energy[key] = this.energy[key] * (1 - this.attackSpeed) + raw[key] * this.attackSpeed;
+      } else {
+        this.energy[key] = this.energy[key] * this.releaseSpeed + raw[key] * (1 - this.releaseSpeed);
+      }
+
+      this.prevBands[key] = raw[key];
+    }
+
+    // Combined pulse: weighted sum emphasizing bass
+    this.pulse.combined = Math.min(1.0,
+      this.pulse.subBass * 0.35 +
+      this.pulse.bass * 0.3 +
+      this.pulse.mids * 0.2 +
+      this.pulse.highs * 0.1 +
+      this.pulse.air * 0.05
+    );
+  }
+}

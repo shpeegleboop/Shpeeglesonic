@@ -120,9 +120,9 @@ impl AudioEngine {
 
         let needs_resample = file_sr != self.device_sample_rate;
 
-        // Ring buffer: ~1 second of audio
+        // Ring buffer: ~100ms of audio (tight sync with visuals)
         let ch = self.device_channels as usize;
-        let buf_size = (self.device_sample_rate as usize * ch).max(16384);
+        let buf_size = (self.device_sample_rate as usize * ch / 10).max(4096);
         let rb = ringbuf::HeapRb::<f32>::new(buf_size);
         let (producer, consumer) = rb.split();
 

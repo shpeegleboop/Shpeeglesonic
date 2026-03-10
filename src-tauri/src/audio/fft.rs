@@ -57,7 +57,7 @@ fn fft_loop(
 
     let mut accumulator: Vec<f32> = Vec::with_capacity(FFT_SIZE * 2);
     let mut smoothed_bins: Vec<f32> = vec![0.0; OUTPUT_BINS];
-    let smoothing = 0.7f32;
+    let smoothing = 0.3f32;
 
     // Emit at ~60Hz
     let emit_interval = std::time::Duration::from_millis(16);
@@ -72,21 +72,40 @@ fn fft_loop(
         .collect();
 
     loop {
-        // Try to receive audio data
-        match rx.recv_timeout(std::time::Duration::from_millis(50)) {
-            Ok(chunk) => {
-                // Mix to mono and accumulate
-                let ch = device_channels as usize;
-                for frame_start in (0..chunk.len()).step_by(ch) {
-                    let mut sum = 0.0f32;
-                    for c in 0..ch.min(chunk.len() - frame_start) {
-                        sum += chunk[frame_start + c];
+        // Drain ALL available audio data from channel (don't let it back up)
+        let mut got_data = false;
+        loop {
+            match rx.try_recv() {
+                Ok(chunk) => {
+                    got_data = true;
+                    let ch = device_channels as usize;
+                    for frame_start in (0..chunk.len()).step_by(ch) {
+                        let mut sum = 0.0f32;
+                        for c in 0..ch.min(chunk.len() - frame_start) {
+                            sum += chunk[frame_start + c];
+                        }
+                        accumulator.push(sum / ch as f32);
                     }
-                    accumulator.push(sum / ch as f32);
                 }
+                Err(_) => break,
             }
-            Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
-            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
+        }
+        // If no data available, wait briefly to avoid busy-spinning
+        if !got_data {
+            match rx.recv_timeout(std::time::Duration::from_millis(4)) {
+                Ok(chunk) => {
+                    let ch = device_channels as usize;
+                    for frame_start in (0..chunk.len()).step_by(ch) {
+                        let mut sum = 0.0f32;
+                        for c in 0..ch.min(chunk.len() - frame_start) {
+                            sum += chunk[frame_start + c];
+                        }
+                        accumulator.push(sum / ch as f32);
+                    }
+                }
+                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
+                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
+            }
         }
 
         let state = playback_state.load(Ordering::Relaxed);
