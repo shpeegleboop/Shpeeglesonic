@@ -9,6 +9,13 @@ interface MandelbrotGLProps {
   height: number;
 }
 
+// Split a JS double into float32 hi + remainder lo for double-float precision
+function splitDouble(val: number): [number, number] {
+  const hi = Math.fround(val);
+  const lo = val - hi;
+  return [hi, lo];
+}
+
 const VERT_SHADER = `
 attribute vec2 a_position;
 void main() {
@@ -19,7 +26,8 @@ void main() {
 const FRAG_SHADER = `
 precision highp float;
 uniform vec2 u_resolution;
-uniform vec2 u_center;
+uniform vec2 u_center_hi;   // high part of center coordinate
+uniform vec2 u_center_lo;   // low part (precision correction)
 uniform float u_zoom;
 uniform float u_time;
 uniform float u_energy;
@@ -31,11 +39,55 @@ uniform float u_colorShift;
 uniform float u_angle;
 uniform int u_maxIter;
 
+// === Double-float arithmetic ===
+// A number is represented as vec2(hi, lo) where value = hi + lo
+// This gives ~14 decimal digits vs ~7 for single float
+
+vec2 ds_qts(float a, float b) {
+  float s = a + b;
+  return vec2(s, b - (s - a));
+}
+
+vec2 ds_ts(float a, float b) {
+  float s = a + b;
+  float v = s - a;
+  return vec2(s, (a - (s - v)) + (b - v));
+}
+
+vec2 ds_add(vec2 a, vec2 b) {
+  vec2 s = ds_ts(a.x, b.x);
+  s.y += a.y + b.y;
+  return ds_qts(s.x, s.y);
+}
+
+vec2 ds_sub(vec2 a, vec2 b) {
+  return ds_add(a, vec2(-b.x, -b.y));
+}
+
+vec2 ds_split(float a) {
+  float t = 4097.0 * a;
+  float hi = t - (t - a);
+  return vec2(hi, a - hi);
+}
+
+vec2 ds_tp(float a, float b) {
+  float p = a * b;
+  vec2 a_s = ds_split(a);
+  vec2 b_s = ds_split(b);
+  float e = ((a_s.x * b_s.x - p) + a_s.x * b_s.y + a_s.y * b_s.x) + a_s.y * b_s.y;
+  return vec2(p, e);
+}
+
+vec2 ds_mul(vec2 a, vec2 b) {
+  vec2 p = ds_tp(a.x, b.x);
+  p.y += a.x * b.y + a.y * b.x;
+  return ds_qts(p.x, p.y);
+}
+
 vec3 palette(float t) {
   vec3 a = vec3(0.5, 0.5, 0.5);
   vec3 b = vec3(0.5, 0.5, 0.5);
   vec3 c = vec3(1.0, 1.0, 1.0);
-  // Color shift driven by transients — entire palette rotates
   vec3 d = vec3(
     u_colorShift + u_time * 0.012 + u_mids * 0.2,
     u_colorShift * 0.7 + 0.33 + u_energy * 0.15 + u_highs * 0.15,
@@ -47,23 +99,40 @@ vec3 palette(float t) {
 void main() {
   vec2 uv = (gl_FragCoord.xy - u_resolution * 0.5) / min(u_resolution.x, u_resolution.y);
 
-  // Rotate the view on bass hits
-  float s = sin(u_angle);
-  float c2 = cos(u_angle);
-  uv = vec2(uv.x * c2 - uv.y * s, uv.x * s + uv.y * c2);
+  // Rotate view on bass hits
+  float sa = sin(u_angle);
+  float ca = cos(u_angle);
+  uv = vec2(uv.x * ca - uv.y * sa, uv.x * sa + uv.y * ca);
 
-  vec2 c = uv / u_zoom + u_center;
+  // c = center + uv/zoom (double-float precision for center)
+  float ox = uv.x / u_zoom;
+  float oy = uv.y / u_zoom;
+  vec2 cx = ds_add(vec2(u_center_hi.x, u_center_lo.x), vec2(ox, 0.0));
+  vec2 cy = ds_add(vec2(u_center_hi.y, u_center_lo.y), vec2(oy, 0.0));
 
-  vec2 z = vec2(0.0);
+  // z = 0 (double-float)
+  vec2 zx = vec2(0.0, 0.0);
+  vec2 zy = vec2(0.0, 0.0);
   float iter = 0.0;
   float maxIter = float(u_maxIter);
 
-  for (int i = 0; i < 512; i++) {
+  for (int i = 0; i < 350; i++) {
     if (i >= u_maxIter) break;
-    if (dot(z, z) > 4.0) break;
-    z = vec2(z.x * z.x - z.y * z.y + c.x, 2.0 * z.x * z.y + c.y);
+    // Escape test (hi parts sufficient)
+    float r2 = zx.x * zx.x + zy.x * zy.x;
+    if (r2 > 4.0) break;
+
+    // z = z^2 + c (double-float precision)
+    vec2 zx2 = ds_mul(zx, zx);
+    vec2 zy2 = ds_mul(zy, zy);
+    vec2 zxy = ds_mul(zx, zy);
+
+    zx = ds_add(ds_sub(zx2, zy2), cx);
+    zy = ds_add(ds_add(zxy, zxy), cy);
     iter += 1.0;
   }
+
+  float z_r2 = zx.x * zx.x + zy.x * zy.x;
 
   if (iter >= maxIter) {
     // Interior: pulse glow on beats
@@ -71,24 +140,20 @@ void main() {
     vec3 interiorColor = palette(u_time * 0.01 + u_colorShift) * glow;
     gl_FragColor = vec4(interiorColor, 1.0);
   } else {
-    float smoothIter = iter - log2(log2(dot(z, z))) + 4.0;
+    float smoothIter = iter - log2(log2(z_r2)) + 4.0;
     float t = smoothIter / maxIter;
     t = t + u_time * 0.005 + u_energy * 0.12;
     vec3 color = palette(t);
 
-    // Brightness: base + energy + pulse flash
     float brightness = 0.65 + u_energy * 0.45 + u_pulse * 0.7;
     color *= brightness;
 
-    // White-hot flash on strong pulses
     color = mix(color, vec3(1.0, 0.95, 0.9), u_pulse * 0.4);
 
-    // Saturation boost from mids/highs
     float sat = 1.0 + u_highs * 0.4 + u_mids * 0.2;
     vec3 gray = vec3(dot(color, vec3(0.299, 0.587, 0.114)));
     color = mix(gray, color, sat);
 
-    // Extra color vibrancy on transients
     color = pow(color, vec3(0.9 - u_pulse * 0.15));
 
     gl_FragColor = vec4(color, 1.0);
@@ -106,13 +171,13 @@ export function MandelbrotGL({ fftRef, width, height }: MandelbrotGLProps) {
   const animRef = useRef<number>(0);
   const timeRef = useRef(0);
   const zoomRef = useRef(0.5);
-  const zoomVelocityRef = useRef(0.01); // zoom momentum — music pulls this
+  const zoomVelocityRef = useRef(0.01);
   const targetIdxRef = useRef(0);
   const beatRef = useRef(new BeatDetector());
   const colorShiftRef = useRef(0);
-  const angleRef = useRef(0);       // camera rotation angle
-  const angleMomentumRef = useRef(0); // angular velocity from beats
-  const centerOffsetRef = useRef({ x: 0, y: 0 }); // camera wobble
+  const angleRef = useRef(0);
+  const angleMomentumRef = useRef(0);
+  const centerOffsetRef = useRef({ x: 0, y: 0 });
   const sensitivity = usePlayerStore((s) => s.visualizerSettings.sensitivity);
   const speed = usePlayerStore((s) => s.visualizerSettings.speed);
   const quality = usePlayerStore((s) => s.visualizerSettings.quality);
@@ -155,7 +220,8 @@ export function MandelbrotGL({ fftRef, width, height }: MandelbrotGLProps) {
 
     const uniforms = {
       u_resolution: gl.getUniformLocation(program, 'u_resolution'),
-      u_center: gl.getUniformLocation(program, 'u_center'),
+      u_center_hi: gl.getUniformLocation(program, 'u_center_hi'),
+      u_center_lo: gl.getUniformLocation(program, 'u_center_lo'),
       u_zoom: gl.getUniformLocation(program, 'u_zoom'),
       u_time: gl.getUniformLocation(program, 'u_time'),
       u_energy: gl.getUniformLocation(program, 'u_energy'),
@@ -180,18 +246,18 @@ export function MandelbrotGL({ fftRef, width, height }: MandelbrotGLProps) {
   useEffect(() => {
     if (!glRef.current) return;
 
-    const baseMaxIter = quality === 'low' ? 60 : quality === 'high' ? 200 : 100;
+    // Lower base iterations — double-float math is ~6x heavier per iteration
+    const baseMaxIter = quality === 'low' ? 45 : quality === 'high' ? 120 : 70;
 
-    // All targets sit ON the Mandelbrot boundary — rich fractal detail at every zoom depth
+    // All targets on the Mandelbrot boundary with high-precision coordinates
+    // These are famous deep-zoom locations known to produce stunning spirals
     const targets = [
-      { x: -0.7435669,    y: 0.1314023 },    // Seahorse valley — classic spirals
-      { x: -0.7473,       y: 0.1088 },       // Double spiral — intertwined arms
-      { x: -0.74364388,   y: 0.13182590 },   // Mini Mandelbrot in seahorse — zooms into a tiny copy
-      { x: -0.761574,     y: -0.0847596 },   // Spiral galaxy — arm-like structures
-      { x: 0.250006,      y: 0.0000045 },    // Elephant valley cusp — trunk-like bulges
-      { x: -0.235125,     y: 0.827215 },     // Period-3 bulb boundary — ornate filigree
-      { x: -1.25066,      y: 0.02012 },      // Antenna branch point — dendrite branching
-      { x: -0.745428,     y: 0.113009 },     // Scepter valley — delicate tendrils
+      { x: -0.74364388703715731, y: 0.13182590420531645 },   // Seahorse valley spiral
+      { x: 0.360240443437614363, y: -0.641313061064803174 }, // Star spiral (multi-arm)
+      { x: -0.7473053613369583,  y: 0.10884893967920656 },   // Double intertwined spiral
+      { x: -0.743643887037158704, y: 0.131825904205311970 }, // Mini Mandelbrot in seahorse
+      { x: -0.7454294354986695,  y: 0.11300929609833704 },   // Scepter valley tendrils
+      { x: -0.74534, y: 0.11302 },                           // Seahorse branch spiral
     ];
 
     const render = () => {
@@ -217,7 +283,7 @@ export function MandelbrotGL({ fftRef, width, height }: MandelbrotGLProps) {
       angleMomentumRef.current *= 0.96;
       angleRef.current += angleMomentumRef.current * speed;
 
-      // === CAMERA POSITION WOBBLE: shifts on bass hits ===
+      // === CAMERA POSITION WOBBLE ===
       const offset = centerOffsetRef.current;
       if (beat.onset.bass && beat.pulse.bass > 0.3) {
         const wobbleScale = 0.0001 / Math.max(0.01, Math.pow(1.5, zoomRef.current - 5));
@@ -228,44 +294,36 @@ export function MandelbrotGL({ fftRef, width, height }: MandelbrotGLProps) {
       offset.y *= 0.97;
 
       // === ZOOM MOMENTUM: music PULLS you into the fractal ===
-      // Gentle surges — feel the beat, don't blast through
       if (beat.onset.subBass) {
         zoomVelocityRef.current += 0.02 + beat.pulse.subBass * 0.04;
       }
       if (beat.onset.bass && beat.pulse.bass > 0.15) {
         zoomVelocityRef.current += 0.03 + beat.pulse.bass * 0.06;
       }
-      // Mids give smaller pulls
       if (beat.onset.mids && beat.pulse.mids > 0.25) {
         zoomVelocityRef.current += 0.01 + beat.pulse.mids * 0.02;
       }
-      // Highs give tiny flutters
       if (beat.onset.highs && beat.pulse.highs > 0.3) {
         zoomVelocityRef.current += 0.005;
       }
 
-      // Continuous energy pull — louder music = slightly faster cruise
       const energyPull = beat.energy.bass * 0.003 + beat.energy.mids * 0.001 + beat.energy.subBass * 0.002;
       zoomVelocityRef.current += energyPull;
 
-      // Friction — coast between beats, decelerate smoothly
+      // Friction
       zoomVelocityRef.current *= 0.93;
-
-      // Minimum drift so it never fully stops — gentle pull even in silence
       zoomVelocityRef.current = Math.max(zoomVelocityRef.current, 0.002);
-      // Cap — keep it appreciable, not breakneck
       zoomVelocityRef.current = Math.min(zoomVelocityRef.current, 0.12);
 
-      // Apply velocity
       zoomRef.current += zoomVelocityRef.current * speed;
       const zoom = Math.pow(1.5, zoomRef.current);
 
-      // Scale iterations with zoom depth — deeper = more detail needed
-      const depthBonus = Math.min(150, Math.floor(zoomRef.current * 4));
+      // Scale iterations with zoom depth
+      const depthBonus = Math.min(80, Math.floor(zoomRef.current * 2));
       const maxIter = baseMaxIter + depthBonus;
 
-      // Reset when zoomed past float precision limit
-      if (zoomRef.current > 38) {
+      // Double-float gives ~14 digits — good to about zoom level 42
+      if (zoomRef.current > 42) {
         zoomRef.current = 0.5;
         zoomVelocityRef.current = 0.008;
         targetIdxRef.current = (targetIdxRef.current + 1) % targets.length;
@@ -277,11 +335,18 @@ export function MandelbrotGL({ fftRef, width, height }: MandelbrotGLProps) {
 
       const target = targets[targetIdxRef.current];
 
+      // Split center coordinates for double-float precision in shader
+      const cx = target.x + offset.x;
+      const cy = target.y + offset.y;
+      const [cxHi, cxLo] = splitDouble(cx);
+      const [cyHi, cyLo] = splitDouble(cy);
+
       gl.viewport(0, 0, width, height);
       gl.useProgram(program);
 
       gl.uniform2f(uniforms.u_resolution, width, height);
-      gl.uniform2f(uniforms.u_center, target.x + offset.x, target.y + offset.y);
+      gl.uniform2f(uniforms.u_center_hi, cxHi, cyHi);
+      gl.uniform2f(uniforms.u_center_lo, cxLo, cyLo);
       gl.uniform1f(uniforms.u_zoom, zoom);
       gl.uniform1f(uniforms.u_time, timeRef.current);
       gl.uniform1f(uniforms.u_energy, Math.min(1, beat.energy.bass + beat.energy.mids * 0.5));
