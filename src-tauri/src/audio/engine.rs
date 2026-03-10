@@ -159,8 +159,37 @@ impl AudioEngine {
         let app_handle = self.app_handle.clone();
         let seek_flush = self.seek_flush.clone();
 
+        // Check if Symphonia can handle this codec, otherwise use ffmpeg fallback
+        let symphonia_err = super::decoder::open_for_streaming(path).err();
+        let use_ffmpeg = if symphonia_err.is_some() {
+            if super::decoder::ffmpeg_available() {
+                true
+            } else {
+                return Err(format!(
+                    "Unsupported codec (install ffmpeg for ALAC/M4A support): {}",
+                    symphonia_err.unwrap()
+                ));
+            }
+        } else {
+            false
+        };
+
         let handle = std::thread::spawn(move || {
-            if needs_resample {
+            if use_ffmpeg {
+                println!("Using ffmpeg fallback for: {}", path_owned);
+                decode_thread_ffmpeg(
+                    &path_owned,
+                    device_sr,
+                    device_channels,
+                    producer,
+                    cmd_rx,
+                    fft_sender,
+                    playback_state,
+                    track_ended,
+                    app_handle,
+                    seek_flush,
+                );
+            } else if needs_resample {
                 decode_thread_resampling(
                     &path_owned,
                     file_sr,
@@ -562,6 +591,132 @@ fn decode_thread_resampling(
             }
         }
     }
+}
+
+/// ffmpeg-based decode thread — used when Symphonia can't decode the codec (e.g. ALAC).
+/// ffmpeg outputs raw f32le PCM at the device sample rate, so no resampling needed.
+fn decode_thread_ffmpeg(
+    path: &str,
+    device_sr: u32,
+    device_channels: u16,
+    mut producer: ringbuf::HeapProd<f32>,
+    cmd_rx: Receiver<DecodeCommand>,
+    fft_sender: Option<Sender<Vec<f32>>>,
+    playback_state: Arc<AtomicU8>,
+    track_ended_naturally: Arc<AtomicBool>,
+    app_handle: Option<tauri::AppHandle>,
+    seek_flush: Arc<AtomicBool>,
+) {
+    use std::io::Read;
+
+    let mut child = match super::decoder::open_ffmpeg_stream(path, device_sr, device_channels) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("ffmpeg fallback failed: {}", e);
+            emit_playback_error(&app_handle, &e, path);
+            playback_state.store(STATE_STOPPED, Ordering::Relaxed);
+            return;
+        }
+    };
+
+    let mut stdout = match child.stdout.take() {
+        Some(s) => s,
+        None => {
+            eprintln!("ffmpeg: no stdout");
+            playback_state.store(STATE_STOPPED, Ordering::Relaxed);
+            return;
+        }
+    };
+
+    // Read buffer: 4096 f32 samples = 16384 bytes
+    let sample_count = 4096;
+    let mut byte_buf = vec![0u8; sample_count * 4];
+    let mut sample_buf = Vec::with_capacity(sample_count);
+    let path_owned = path.to_string();
+
+    loop {
+        // Check for commands (non-blocking)
+        if let Ok(cmd) = cmd_rx.try_recv() {
+            match cmd {
+                DecodeCommand::Stop => {
+                    let _ = child.kill();
+                    break;
+                }
+                DecodeCommand::Seek(seconds) => {
+                    // Kill current ffmpeg, restart at new position
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    match super::decoder::open_ffmpeg_stream_seeked(
+                        &path_owned, device_sr, device_channels, seconds,
+                    ) {
+                        Ok(mut new_child) => {
+                            stdout = match new_child.stdout.take() {
+                                Some(s) => s,
+                                None => {
+                                    eprintln!("ffmpeg seek: no stdout");
+                                    playback_state.store(STATE_STOPPED, Ordering::Relaxed);
+                                    return;
+                                }
+                            };
+                            child = new_child;
+                        }
+                        Err(e) => {
+                            eprintln!("ffmpeg seek failed: {}", e);
+                            emit_playback_error(&app_handle, &e, &path_owned);
+                            playback_state.store(STATE_STOPPED, Ordering::Relaxed);
+                            return;
+                        }
+                    }
+                    seek_flush.store(false, Ordering::Release);
+                    continue;
+                }
+            }
+        }
+
+        let state = playback_state.load(Ordering::Relaxed);
+        if state == STATE_STOPPED {
+            let _ = child.kill();
+            break;
+        }
+        if state == STATE_PAUSED {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            continue;
+        }
+
+        // Read raw f32le bytes from ffmpeg stdout
+        match stdout.read(&mut byte_buf) {
+            Ok(0) => {
+                // EOF — track finished
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                track_ended_naturally.store(true, Ordering::Relaxed);
+                playback_state.store(STATE_STOPPED, Ordering::Relaxed);
+                break;
+            }
+            Ok(n) => {
+                // Convert bytes to f32 samples (little-endian)
+                let num_samples = n / 4;
+                sample_buf.clear();
+                sample_buf.reserve(num_samples);
+                for i in 0..num_samples {
+                    let offset = i * 4;
+                    let sample = f32::from_le_bytes([
+                        byte_buf[offset],
+                        byte_buf[offset + 1],
+                        byte_buf[offset + 2],
+                        byte_buf[offset + 3],
+                    ]);
+                    sample_buf.push(sample);
+                }
+                push_to_ringbuf(&sample_buf, &mut producer, &cmd_rx, &fft_sender, &playback_state);
+            }
+            Err(e) => {
+                eprintln!("ffmpeg read error: {}", e);
+                break;
+            }
+        }
+    }
+
+    let _ = child.wait();
 }
 
 /// Push a slice of samples to the ring buffer, waiting if full.

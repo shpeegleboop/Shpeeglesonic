@@ -111,6 +111,68 @@ pub fn open_for_streaming(
     Ok((format_reader, decoder, track_id, sample_rate, channels))
 }
 
+/// Check if ffmpeg is available on the system.
+pub fn ffmpeg_available() -> bool {
+    std::process::Command::new("ffmpeg")
+        .arg("-version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Spawn ffmpeg to decode a file to raw f32le PCM at the given sample rate and channel count.
+/// Returns the child process (whose stdout is the raw PCM stream).
+pub fn open_ffmpeg_stream(
+    path: &str,
+    output_sample_rate: u32,
+    output_channels: u16,
+) -> Result<std::process::Child, String> {
+    let child = std::process::Command::new("ffmpeg")
+        .args([
+            "-i", path,
+            "-f", "f32le",        // raw 32-bit float little-endian PCM
+            "-acodec", "pcm_f32le",
+            "-ar", &output_sample_rate.to_string(),
+            "-ac", &output_channels.to_string(),
+            "-v", "quiet",
+            "-",                  // output to stdout
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("Failed to spawn ffmpeg: {}", e))?;
+
+    Ok(child)
+}
+
+/// Spawn ffmpeg to decode a file starting from a given position.
+pub fn open_ffmpeg_stream_seeked(
+    path: &str,
+    output_sample_rate: u32,
+    output_channels: u16,
+    seek_seconds: f64,
+) -> Result<std::process::Child, String> {
+    let child = std::process::Command::new("ffmpeg")
+        .args([
+            "-ss", &format!("{:.3}", seek_seconds),
+            "-i", path,
+            "-f", "f32le",
+            "-acodec", "pcm_f32le",
+            "-ar", &output_sample_rate.to_string(),
+            "-ac", &output_channels.to_string(),
+            "-v", "quiet",
+            "-",
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("Failed to spawn ffmpeg: {}", e))?;
+
+    Ok(child)
+}
+
 /// Decode an audio file at the given path into interleaved f32 PCM samples.
 /// Used as fallback when resampling is needed.
 pub fn decode_file(path: &str) -> Result<DecodedAudio, String> {
