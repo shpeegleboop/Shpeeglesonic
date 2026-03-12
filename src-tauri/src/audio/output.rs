@@ -62,12 +62,11 @@ pub fn build_output_stream(
                     return;
                 }
 
-                let vol = volume.load(Ordering::Relaxed) as f32 / 100.0;
                 let read = consumer.pop_slice(data);
 
-                for sample in &mut data[..read] {
-                    *sample *= vol;
-                }
+                // Volume is applied in the decode thread before pushing to ring buffer.
+                // This callback just reads and writes — no processing.
+                let _ = volume.load(Ordering::Relaxed); // keep the Arc alive
                 for sample in &mut data[read..] {
                     *sample = 0.0;
                 }

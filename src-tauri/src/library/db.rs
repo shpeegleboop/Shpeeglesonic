@@ -15,6 +15,11 @@ pub fn init_db(db_path: &Path) -> Result<DbPool, String> {
     let conn =
         Connection::open(db_path).map_err(|e| format!("Failed to open database: {}", e))?;
 
+    // Enable foreign key enforcement — SQLite has this OFF by default.
+    // Without this, ON DELETE CASCADE does nothing.
+    conn.execute_batch("PRAGMA foreign_keys = ON;")
+        .map_err(|e| format!("Failed to enable foreign keys: {}", e))?;
+
     conn.execute_batch(
         "
         CREATE TABLE IF NOT EXISTS tracks (
@@ -39,6 +44,7 @@ pub fn init_db(db_path: &Path) -> Result<DbPool, String> {
             channels INTEGER,
             has_album_art INTEGER DEFAULT 0,
             art_path TEXT,
+            album_art_color TEXT,
             date_added TEXT DEFAULT (datetime('now')),
             last_played TEXT,
             play_count INTEGER DEFAULT 0,
@@ -58,8 +64,7 @@ pub fn init_db(db_path: &Path) -> Result<DbPool, String> {
             track_id INTEGER NOT NULL,
             position INTEGER NOT NULL,
             FOREIGN KEY (playlist_id) REFERENCES playlists(id) ON DELETE CASCADE,
-            FOREIGN KEY (track_id) REFERENCES tracks(id) ON DELETE CASCADE,
-            UNIQUE(playlist_id, position)
+            FOREIGN KEY (track_id) REFERENCES tracks(id) ON DELETE CASCADE
         );
 
         CREATE TABLE IF NOT EXISTS library_folders (
@@ -82,6 +87,12 @@ pub fn init_db(db_path: &Path) -> Result<DbPool, String> {
         CREATE INDEX IF NOT EXISTS idx_tracks_genre ON tracks(genre);
         CREATE INDEX IF NOT EXISTS idx_tracks_bpm ON tracks(bpm);
         CREATE INDEX IF NOT EXISTS idx_tracks_title ON tracks(title);
+        CREATE INDEX IF NOT EXISTS idx_tracks_year ON tracks(year);
+        CREATE INDEX IF NOT EXISTS idx_tracks_date_added ON tracks(date_added);
+        CREATE INDEX IF NOT EXISTS idx_tracks_duration ON tracks(duration_seconds);
+        CREATE INDEX IF NOT EXISTS idx_tracks_play_count ON tracks(play_count);
+        CREATE INDEX IF NOT EXISTS idx_tracks_format ON tracks(format);
+        CREATE INDEX IF NOT EXISTS idx_tracks_favorited ON tracks(favorited);
         ",
     )
     .map_err(|e| format!("Failed to create tables: {}", e))?;
@@ -153,6 +164,7 @@ pub struct Track {
     pub channels: Option<i32>,
     pub has_album_art: bool,
     pub art_path: Option<String>,
+    pub album_art_color: Option<String>,
     pub play_count: i32,
     pub favorited: bool,
 }
@@ -199,7 +211,7 @@ pub fn get_tracks(
         "SELECT id, file_path, file_name, title, artist, album_artist, album, genre,
                 year, track_number, disc_number, bpm, duration_seconds, format,
                 bitrate, sample_rate, bit_depth, channels, has_album_art, art_path,
-                play_count, favorited
+                album_art_color, play_count, favorited
          FROM tracks{}
          ORDER BY {} {}",
         where_clause, order_col, order_dir
@@ -246,8 +258,9 @@ fn map_track_row(row: &rusqlite::Row) -> rusqlite::Result<Track> {
         channels: row.get(17)?,
         has_album_art: row.get::<_, i32>(18)? != 0,
         art_path: row.get(19)?,
-        play_count: row.get(20)?,
-        favorited: row.get::<_, i32>(21)? != 0,
+        album_art_color: row.get(20)?,
+        play_count: row.get(21)?,
+        favorited: row.get::<_, i32>(22)? != 0,
     })
 }
 
@@ -425,7 +438,7 @@ pub fn get_playlist_tracks(conn: &Connection, playlist_id: i64) -> Result<Vec<Tr
             "SELECT t.id, t.file_path, t.file_name, t.title, t.artist, t.album_artist, t.album,
                     t.genre, t.year, t.track_number, t.disc_number, t.bpm, t.duration_seconds,
                     t.format, t.bitrate, t.sample_rate, t.bit_depth, t.channels, t.has_album_art,
-                    t.art_path, t.play_count, t.favorited
+                    t.art_path, t.album_art_color, t.play_count, t.favorited
              FROM tracks t
              JOIN playlist_tracks pt ON t.id = pt.track_id
              WHERE pt.playlist_id = ?1

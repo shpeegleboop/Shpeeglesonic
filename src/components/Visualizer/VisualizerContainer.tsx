@@ -15,7 +15,7 @@ export function VisualizerContainer({ inline }: VisualizerContainerProps) {
   const [size, setSize] = useState({ width: 400, height: 200 });
   const mode = usePlayerStore((s) => s.visualizerMode);
   const fullscreen = usePlayerStore((s) => s.visualizerFullscreen);
-  const fftRef = useFFTData();
+  const { fftRef, lastUpdateRef } = useFFTData();
 
   useEffect(() => {
     const el = containerRef.current;
@@ -35,7 +35,7 @@ export function VisualizerContainer({ inline }: VisualizerContainerProps) {
   }, []);
 
   const renderVisualizer = () => {
-    const props = { fftRef, width: size.width, height: size.height };
+    const props = { fftRef, lastUpdateRef, width: size.width, height: size.height };
 
     switch (mode) {
       case 'spectrogram':

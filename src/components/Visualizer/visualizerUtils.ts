@@ -1,3 +1,5 @@
+import type React from 'react';
+
 // Frequency band ranges (bin indices for 2048-point FFT at 44100Hz, ~21.5Hz per bin)
 export const BANDS = {
   subBass: { start: 1, end: 4 },     // 20-80Hz
@@ -61,6 +63,33 @@ export function hslToRgb(h: number, s: number, l: number): [number, number, numb
 
 export function lerp(a: number, b: number, t: number): number {
   return a + (b - a) * t;
+}
+
+/**
+ * Get FFT data with smooth decay when no new data is arriving (e.g. between tracks).
+ * Prevents jarring visual snap to zero.
+ */
+export function getDecayedFFT(
+  fftRef: React.RefObject<{ bins: number[]; rms: number; time: number } | null>,
+  lastUpdateRef: React.RefObject<number | null>
+): { bins: number[]; rms: number; time: number } | null {
+  const data = fftRef.current;
+  if (!data) return null;
+
+  const lastUpdate = lastUpdateRef.current ?? Date.now();
+  const elapsed = Date.now() - lastUpdate;
+  if (elapsed < 50) return data; // fresh data, no decay needed
+
+  const decay = Math.pow(0.85, elapsed / 16);
+  if (decay < 0.01) {
+    // Fully decayed — return zeros
+    return { bins: data.bins.map(() => 0), rms: 0, time: data.time };
+  }
+  return {
+    bins: data.bins.map(b => Math.floor(b * decay)),
+    rms: data.rms * decay,
+    time: data.time,
+  };
 }
 
 /**

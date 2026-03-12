@@ -26,7 +26,7 @@ export default {
         },
       },
       fontFamily: {
-        display: ['system-ui', '-apple-system', 'sans-serif'],
+        display: ['Syne', 'system-ui', '-apple-system', 'sans-serif'],
         mono: ['JetBrains Mono', 'Menlo', 'monospace'],
       },
       animation: {

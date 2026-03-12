@@ -1,15 +1,16 @@
 import { useRef, useEffect } from 'react';
 import type { FFTData } from '../../hooks/useFFTData';
-import { BeatDetector, hslToRgb } from './visualizerUtils';
+import { BeatDetector, hslToRgb, getDecayedFFT } from './visualizerUtils';
 import { usePlayerStore } from '../../stores/playerStore';
 
 interface RadialSpiralProps {
   fftRef: React.RefObject<FFTData>;
+  lastUpdateRef: React.RefObject<number>;
   width: number;
   height: number;
 }
 
-export function RadialSpiral({ fftRef, width, height }: RadialSpiralProps) {
+export function RadialSpiral({ fftRef, lastUpdateRef, width, height }: RadialSpiralProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const offscreenRef = useRef<HTMLCanvasElement | null>(null);
   const animRef = useRef<number>(0);
@@ -44,7 +45,7 @@ export function RadialSpiral({ fftRef, width, height }: RadialSpiralProps) {
       animRef.current = requestAnimationFrame(render);
       timeRef.current += 0.016 * speed;
 
-      const data = fftRef.current;
+      const data = getDecayedFFT(fftRef, lastUpdateRef) || { bins: new Array(1024).fill(0), rms: 0, time: 0 };
       const beat = beatRef.current;
       beat.update(data.bins, sensitivity);
 

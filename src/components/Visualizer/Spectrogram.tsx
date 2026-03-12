@@ -1,15 +1,16 @@
 import { useRef, useEffect } from 'react';
 import type { FFTData } from '../../hooks/useFFTData';
-import { getLogBins, hslToRgb } from './visualizerUtils';
+import { getLogBins, hslToRgb, getDecayedFFT } from './visualizerUtils';
 import { usePlayerStore } from '../../stores/playerStore';
 
 interface SpectrogramProps {
   fftRef: React.RefObject<FFTData>;
+  lastUpdateRef: React.RefObject<number>;
   width: number;
   height: number;
 }
 
-export function Spectrogram({ fftRef, width, height }: SpectrogramProps) {
+export function Spectrogram({ fftRef, lastUpdateRef, width, height }: SpectrogramProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const smoothedRef = useRef<number[]>(new Array(64).fill(0));
   const animRef = useRef<number>(0);
@@ -29,7 +30,7 @@ export function Spectrogram({ fftRef, width, height }: SpectrogramProps) {
     const render = () => {
       animRef.current = requestAnimationFrame(render);
 
-      const data = fftRef.current;
+      const data = getDecayedFFT(fftRef, lastUpdateRef);
       if (!data) return;
 
       const logBins = getLogBins(data.bins, numBars);

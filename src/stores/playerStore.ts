@@ -21,6 +21,7 @@ export interface Track {
   channels: number | null;
   has_album_art: boolean;
   art_path: string | null;
+  album_art_color: string | null;
   play_count: number;
   favorited: boolean;
 }

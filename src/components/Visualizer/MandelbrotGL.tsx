@@ -1,10 +1,11 @@
 import { useRef, useEffect } from 'react';
 import type { FFTData } from '../../hooks/useFFTData';
-import { BeatDetector } from './visualizerUtils';
+import { BeatDetector, getDecayedFFT } from './visualizerUtils';
 import { usePlayerStore } from '../../stores/playerStore';
 
 interface MandelbrotGLProps {
   fftRef: React.RefObject<FFTData>;
+  lastUpdateRef: React.RefObject<number>;
   width: number;
   height: number;
 }
@@ -161,7 +162,7 @@ void main() {
 }
 `;
 
-export function MandelbrotGL({ fftRef, width, height }: MandelbrotGLProps) {
+export function MandelbrotGL({ fftRef, lastUpdateRef, width, height }: MandelbrotGLProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const glRef = useRef<{
     gl: WebGLRenderingContext;
@@ -264,7 +265,7 @@ export function MandelbrotGL({ fftRef, width, height }: MandelbrotGLProps) {
       animRef.current = requestAnimationFrame(render);
 
       const { gl, program, uniforms } = glRef.current!;
-      const data = fftRef.current;
+      const data = getDecayedFFT(fftRef, lastUpdateRef) || { bins: new Array(1024).fill(0), rms: 0, time: 0 };
       const beat = beatRef.current;
 
       timeRef.current += 0.016 * speed;

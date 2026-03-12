@@ -18,6 +18,7 @@ export function useFFTData() {
     rms: 0,
     time: 0,
   });
+  const lastUpdateRef = useRef<number>(Date.now());
 
   const setCurrentTime = usePlayerStore((s) => s.setCurrentTime);
 
@@ -27,6 +28,7 @@ export function useFFTData() {
 
     listen<FFTData>('fft-data', (event) => {
       fftRef.current = event.payload;
+      lastUpdateRef.current = Date.now();
       // Update time in store at ~15Hz to avoid excessive re-renders
       frameCount++;
       if (frameCount % 4 === 0 && event.payload.time > 0) {
@@ -102,5 +104,5 @@ export function useFFTData() {
     };
   }, [setCurrentTime]);
 
-  return fftRef;
+  return { fftRef, lastUpdateRef };
 }

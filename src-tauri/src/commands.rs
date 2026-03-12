@@ -72,14 +72,19 @@ pub fn get_playback_state(engine: State<'_, AudioEngineState>) -> Result<String,
 // ─── Library Commands ──────────────────────────────────────────────────
 
 #[command]
-pub fn scan_folder(path: String, db: State<'_, DbPool>) -> Result<u32, String> {
+pub fn scan_folder(path: String, db: State<'_, DbPool>, app_handle: tauri::AppHandle) -> Result<u32, String> {
     let conn = db.lock().map_err(|e| e.to_string())?;
 
     // Add to library folders
     db::add_library_folder(&conn, &path)?;
 
-    // Get art cache dir
-    let art_cache_dir = dirs_art_cache();
+    // Art cache lives alongside the DB in Tauri's app data dir
+    use tauri::Manager;
+    let art_cache_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to get app data dir: {}", e))?
+        .join("art_cache");
     std::fs::create_dir_all(&art_cache_dir)
         .map_err(|e| format!("Failed to create art cache: {}", e))?;
 
@@ -273,11 +278,3 @@ pub async fn fetch_lyrics(
     }
 }
 
-// ─── Helpers ───────────────────────────────────────────────────────────
-
-fn dirs_art_cache() -> std::path::PathBuf {
-    let mut path = dirs::data_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
-    path.push("com.shpeeglesonic.app");
-    path.push("art_cache");
-    path
-}

@@ -153,6 +153,7 @@ impl AudioEngine {
         let fft_sender = self.fft_sender.clone();
         let playback_state = self.playback_state.clone();
         let track_ended = self.track_ended_naturally.clone();
+        let volume = self.volume.clone();
         let device_channels = self.device_channels;
         let device_sr = self.device_sample_rate;
         let path_owned = path.to_string();
@@ -188,6 +189,7 @@ impl AudioEngine {
                     track_ended,
                     app_handle,
                     seek_flush,
+                    volume,
                 );
             } else if needs_resample {
                 decode_thread_resampling(
@@ -203,6 +205,7 @@ impl AudioEngine {
                     track_ended,
                     app_handle,
                     seek_flush,
+                    volume,
                 );
             } else {
                 decode_thread_streaming(
@@ -217,6 +220,7 @@ impl AudioEngine {
                     device_sr,
                     app_handle,
                     seek_flush,
+                    volume,
                 );
             }
         });
@@ -307,6 +311,7 @@ fn decode_thread_streaming(
     _sample_rate: u32,
     app_handle: Option<tauri::AppHandle>,
     seek_flush: Arc<AtomicBool>,
+    volume: Arc<AtomicU8>,
 ) {
     let (mut format_reader, mut decoder, track_id, _sr, _ch) =
         match super::decoder::open_for_streaming(path) {
@@ -413,7 +418,7 @@ fn decode_thread_streaming(
         };
 
         // Push to ring buffer, waiting if full
-        push_to_ringbuf(output, &mut producer, &cmd_rx, &fft_sender, &playback_state);
+        push_to_ringbuf(output, &mut producer, &cmd_rx, &fft_sender, &playback_state, &volume);
     }
 }
 
@@ -433,6 +438,7 @@ fn decode_thread_resampling(
     track_ended_naturally: Arc<AtomicBool>,
     app_handle: Option<tauri::AppHandle>,
     seek_flush: Arc<AtomicBool>,
+    volume: Arc<AtomicU8>,
 ) {
     println!("Streaming resample {}Hz → {}Hz", file_sr, device_sr);
 
@@ -518,7 +524,7 @@ fn decode_thread_resampling(
                     let needed = chunk_frames * ch;
                     accum.resize(needed, 0.0);
                     if let Ok(resampled) = resampler.process_chunk(&accum) {
-                        push_to_ringbuf(&resampled, &mut producer, &cmd_rx, &fft_sender, &playback_state);
+                        push_to_ringbuf(&resampled, &mut producer, &cmd_rx, &fft_sender, &playback_state, &volume);
                     }
                 }
                 std::thread::sleep(std::time::Duration::from_millis(100));
@@ -576,7 +582,7 @@ fn decode_thread_resampling(
             let chunk: Vec<f32> = accum.drain(..chunk_samples).collect();
             match resampler.process_chunk(&chunk) {
                 Ok(resampled) => {
-                    push_to_ringbuf(&resampled, &mut producer, &cmd_rx, &fft_sender, &playback_state);
+                    push_to_ringbuf(&resampled, &mut producer, &cmd_rx, &fft_sender, &playback_state, &volume);
                     // Check if we should stop after pushing
                     if playback_state.load(Ordering::Relaxed) == STATE_STOPPED {
                         return;
@@ -606,6 +612,7 @@ fn decode_thread_ffmpeg(
     track_ended_naturally: Arc<AtomicBool>,
     app_handle: Option<tauri::AppHandle>,
     seek_flush: Arc<AtomicBool>,
+    volume: Arc<AtomicU8>,
 ) {
     use std::io::Read;
 
@@ -707,7 +714,7 @@ fn decode_thread_ffmpeg(
                     ]);
                     sample_buf.push(sample);
                 }
-                push_to_ringbuf(&sample_buf, &mut producer, &cmd_rx, &fft_sender, &playback_state);
+                push_to_ringbuf(&sample_buf, &mut producer, &cmd_rx, &fft_sender, &playback_state, &volume);
             }
             Err(e) => {
                 eprintln!("ffmpeg read error: {}", e);
@@ -719,9 +726,8 @@ fn decode_thread_ffmpeg(
     let _ = child.wait();
 }
 
-/// Push a slice of samples to the ring buffer, waiting if full.
-/// Also sends copies to the FFT thread.
-/// Push samples to the ring buffer, waiting if full.
+/// Push samples to the ring buffer with volume applied, waiting if full.
+/// Also sends copies to the FFT thread (post-volume, so visualizers match what you hear).
 /// Only checks playback_state to bail out — does NOT consume commands from cmd_rx
 /// (that's the caller's job, so seek commands aren't silently dropped).
 fn push_to_ringbuf(
@@ -730,22 +736,27 @@ fn push_to_ringbuf(
     _cmd_rx: &Receiver<DecodeCommand>,
     fft_sender: &Option<Sender<Vec<f32>>>,
     playback_state: &Arc<AtomicU8>,
+    volume: &Arc<AtomicU8>,
 ) {
+    // Apply volume once here — the cpal callback just reads from the ring buffer raw.
+    let vol = volume.load(Ordering::Relaxed) as f32 / 100.0;
+    let scaled: Vec<f32> = samples.iter().map(|&s| s * vol).collect();
+
     let mut pos = 0;
-    while pos < samples.len() {
+    while pos < scaled.len() {
         let state = playback_state.load(Ordering::Relaxed);
         if state == STATE_STOPPED {
             return;
         }
 
-        let pushed = producer.push_slice(&samples[pos..]);
+        let pushed = producer.push_slice(&scaled[pos..]);
         if pushed == 0 {
             std::thread::sleep(std::time::Duration::from_millis(2));
             continue;
         }
 
         if let Some(ref fft_tx) = fft_sender {
-            let _ = fft_tx.try_send(samples[pos..pos + pushed].to_vec());
+            let _ = fft_tx.try_send(scaled[pos..pos + pushed].to_vec());
         }
 
         pos += pushed;
