@@ -76,9 +76,14 @@ pub fn run() {
             // Playlists
             commands::create_playlist,
             commands::delete_playlist,
+            commands::rename_playlist,
+            commands::reorder_playlists,
             commands::get_playlists,
             commands::add_track_to_playlist,
             commands::remove_track_from_playlist,
+            commands::reorder_playlist_track,
+            commands::get_duplicate_candidates,
+            commands::set_track_hidden,
             commands::get_playlist_tracks,
             // Lyrics
             commands::fetch_lyrics,

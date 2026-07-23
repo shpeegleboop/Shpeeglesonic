@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
-import { usePlayerStore } from '../../stores/playerStore';
+import { usePlayerStore, FAVORITES_PLAYLIST_ID } from '../../stores/playerStore';
+import { usePlaylistGrouping } from '../../hooks/usePlaylistGrouping';
 import { useLibrary } from '../../hooks/useLibrary';
 import { useAudioPlayer } from '../../hooks/useAudioPlayer';
 import { TrackList } from './TrackList';
@@ -18,12 +19,16 @@ export function LibraryView() {
     library.fetchFolders();
   }, []);
 
+  const isFavorites = selectedPlaylistId === FAVORITES_PLAYLIST_ID;
+  const baseTracks = usePlaylistGrouping(library);
+  const visibleTracks = isFavorites ? baseTracks.filter((t) => t.favorited) : baseTracks;
+
   return (
     <div className="flex flex-1 overflow-hidden">
       <PlaylistSidebar />
 
       <div className="flex-1 flex flex-col overflow-hidden">
-        {selectedPlaylistId === null ? (
+        {selectedPlaylistId === null || isFavorites ? (
           <>
             <div className="p-2 space-y-2 border-b border-cosmic-border/30">
               <SearchBar value={library.searchQuery} onChange={library.updateSearch} />
@@ -31,12 +36,14 @@ export function LibraryView() {
             </div>
             <div className="flex-1 overflow-hidden">
               <TrackList
-                tracks={library.tracks}
+                tracks={visibleTracks}
                 sortBy={library.sortBy}
                 onLibraryChanged={() => library.fetchTracks()}
+                emptyTitle={isFavorites ? 'No favorites yet' : undefined}
+                emptySubtitle={isFavorites ? 'Right-click a track (or use the heart on Now Playing) to favorite it' : undefined}
                 onPlay={(track) => {
-                  const idx = library.tracks.findIndex((t) => t.id === track.id);
-                  usePlayerStore.getState().setQueue(library.tracks, idx);
+                  const idx = visibleTracks.findIndex((t) => t.id === track.id);
+                  usePlayerStore.getState().setQueue(visibleTracks, idx);
                   player.playTrack(track);
                 }}
               />

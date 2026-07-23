@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { usePlayerStore } from '../../stores/playerStore';
 import { useLibrary } from '../../hooks/useLibrary';
+import { usePlaylistGrouping } from '../../hooks/usePlaylistGrouping';
 import { useAudioPlayer } from '../../hooks/useAudioPlayer';
 import { TrackList } from '../Library/TrackList';
 import { SearchBar } from '../Library/SearchBar';
@@ -9,6 +10,7 @@ import { SortControls } from '../Library/SortControls';
 export function Sidebar() {
   const collapsed = usePlayerStore((s) => s.sidebarCollapsed);
   const library = useLibrary();
+  const displayTracks = usePlaylistGrouping(library);
   const player = useAudioPlayer();
 
   useEffect(() => {
@@ -27,13 +29,13 @@ export function Sidebar() {
 
       <div className="flex-1 overflow-hidden">
         <TrackList
-          tracks={library.tracks}
+          tracks={displayTracks}
           sortBy={library.sortBy}
           onLibraryChanged={() => library.fetchTracks()}
           onPlay={(track) => {
-            // Set queue to all library tracks, start at the clicked one
-            const idx = library.tracks.findIndex((t) => t.id === track.id);
-            usePlayerStore.getState().setQueue(library.tracks, idx);
+            // Set queue to the displayed list, start at the clicked one
+            const idx = displayTracks.findIndex((t) => t.id === track.id);
+            usePlayerStore.getState().setQueue(displayTracks, idx);
             player.playTrack(track);
           }}
         />

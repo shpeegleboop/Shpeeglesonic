@@ -6,22 +6,8 @@ use crate::audio::metadata::TrackMetadata;
 
 pub type DbPool = Arc<Mutex<Connection>>;
 
-/// Initialize the database, creating tables if they don't exist.
-pub fn init_db(db_path: &Path) -> Result<DbPool, String> {
-    if let Some(parent) = db_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("Failed to create db dir: {}", e))?;
-    }
-
-    let conn =
-        Connection::open(db_path).map_err(|e| format!("Failed to open database: {}", e))?;
-
-    // Enable foreign key enforcement — SQLite has this OFF by default.
-    // Without this, ON DELETE CASCADE does nothing.
-    conn.execute_batch("PRAGMA foreign_keys = ON;")
-        .map_err(|e| format!("Failed to enable foreign keys: {}", e))?;
-
-    conn.execute_batch(
-        "
+/// Schema DDL — shared between init_db and the test harness.
+const SCHEMA_SQL: &str = "
         CREATE TABLE IF NOT EXISTS tracks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             file_path TEXT UNIQUE NOT NULL,
@@ -93,13 +79,38 @@ pub fn init_db(db_path: &Path) -> Result<DbPool, String> {
         CREATE INDEX IF NOT EXISTS idx_tracks_play_count ON tracks(play_count);
         CREATE INDEX IF NOT EXISTS idx_tracks_format ON tracks(format);
         CREATE INDEX IF NOT EXISTS idx_tracks_favorited ON tracks(favorited);
-        ",
-    )
-    .map_err(|e| format!("Failed to create tables: {}", e))?;
+        ";
+
+/// Apply schema + migrations to an open connection.
+fn apply_schema(conn: &Connection) -> Result<(), String> {
+    // Enable foreign key enforcement — SQLite has this OFF by default.
+    // Without this, ON DELETE CASCADE does nothing.
+    conn.execute_batch("PRAGMA foreign_keys = ON;")
+        .map_err(|e| format!("Failed to enable foreign keys: {}", e))?;
+
+    conn.execute_batch(SCHEMA_SQL)
+        .map_err(|e| format!("Failed to create tables: {}", e))?;
 
     // Migrations for older databases — ignore "duplicate column" errors
     let _ = conn.execute("ALTER TABLE tracks ADD COLUMN duplicate_of INTEGER", []);
     let _ = conn.execute("ALTER TABLE tracks ADD COLUMN dup_reviewed INTEGER DEFAULT 0", []);
+    let _ = conn.execute("ALTER TABLE playlists ADD COLUMN sort_order INTEGER", []);
+    // Backfill manual order for pre-migration playlists (creation order)
+    let _ = conn.execute("UPDATE playlists SET sort_order = id WHERE sort_order IS NULL", []);
+
+    Ok(())
+}
+
+/// Initialize the database, creating tables if they don't exist.
+pub fn init_db(db_path: &Path) -> Result<DbPool, String> {
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("Failed to create db dir: {}", e))?;
+    }
+
+    let conn =
+        Connection::open(db_path).map_err(|e| format!("Failed to open database: {}", e))?;
+
+    apply_schema(&conn)?;
 
     Ok(Arc::new(Mutex::new(conn)))
 }
@@ -367,6 +378,63 @@ pub fn set_track_field(
     Ok(())
 }
 
+/// A duplicate-browser row: the track plus whether it's currently hidden
+/// (duplicate_of set). Hidden tracks stay listed so they can be unhidden.
+#[derive(Clone, serde::Serialize)]
+pub struct DuplicateCandidate {
+    #[serde(flatten)]
+    pub track: Track,
+    pub hidden: bool,
+}
+
+/// Every track (visible or hidden) that shares a non-empty title + artist
+/// with at least one other track — the working set for the duplicates browser.
+pub fn get_duplicate_candidates(conn: &Connection) -> Result<Vec<DuplicateCandidate>, String> {
+    let sql = format!(
+        "SELECT id, file_path, file_name, title, artist, album_artist, album, genre,
+                year, track_number, disc_number, bpm, duration_seconds, format,
+                bitrate, sample_rate, bit_depth, channels, has_album_art, art_path,
+                album_art_color, play_count, favorited, {} as dup_flag,
+                (t.duplicate_of IS NOT NULL) as hidden
+         FROM tracks t
+         WHERE COALESCE(t.title, '') != '' AND EXISTS (
+            SELECT 1 FROM tracks t2 WHERE t2.id != t.id
+              AND lower(COALESCE(t2.title, '')) = lower(COALESCE(t.title, ''))
+              AND lower(COALESCE(t2.artist, '')) = lower(COALESCE(t.artist, ''))
+         )
+         ORDER BY lower(COALESCE(artist, '')), lower(COALESCE(title, '')), id",
+        DUP_FLAG_SQL
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|e| format!("Query error: {}", e))?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(DuplicateCandidate {
+                track: map_track_row(row)?,
+                hidden: row.get::<_, i32>(24)? != 0,
+            })
+        })
+        .map_err(|e| format!("Query error: {}", e))?;
+
+    Ok(rows.flatten().collect())
+}
+
+/// Hide a track behind a keeper (duplicate_of = keeper id) or unhide it (None).
+pub fn set_track_hidden(
+    conn: &Connection,
+    track_id: i64,
+    duplicate_of: Option<i64>,
+) -> Result<(), String> {
+    if duplicate_of == Some(track_id) {
+        return Err("A track cannot be a duplicate of itself".to_string());
+    }
+    conn.execute(
+        "UPDATE tracks SET duplicate_of = ?1 WHERE id = ?2",
+        params![duplicate_of, track_id],
+    )
+    .map_err(|e| format!("Failed to update track: {}", e))?;
+    Ok(())
+}
+
 /// Collapse byte-identical files into one visible track.
 /// Files are grouped by size (cheap), then size-collisions are compared by
 /// content. Losers get `duplicate_of` set and disappear from the library;
@@ -509,11 +577,61 @@ pub fn record_play(conn: &Connection, track_id: i64) -> Result<(), String> {
 
 pub fn create_playlist(conn: &Connection, name: &str) -> Result<i64, String> {
     conn.execute(
-        "INSERT INTO playlists (name) VALUES (?1)",
+        "INSERT INTO playlists (name, sort_order)
+         VALUES (?1, (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM playlists))",
         params![name],
     )
     .map_err(|e| format!("Failed to create playlist: {}", e))?;
     Ok(conn.last_insert_rowid())
+}
+
+/// Move a playlist from one sidebar position to another (0-based, in
+/// sort_order) and rewrite sort_order to stay contiguous.
+pub fn reorder_playlists(conn: &Connection, from: usize, to: usize) -> Result<(), String> {
+    let mut stmt = conn
+        .prepare("SELECT id FROM playlists ORDER BY sort_order, id")
+        .map_err(|e| format!("Query error: {}", e))?;
+    let ids: Vec<i64> = stmt
+        .query_map([], |row| row.get(0))
+        .map_err(|e| format!("Query error: {}", e))?
+        .flatten()
+        .collect();
+
+    if from >= ids.len() || to >= ids.len() {
+        return Err(format!("Reorder index out of range ({} -> {} of {})", from, to, ids.len()));
+    }
+
+    let mut order = ids;
+    let moved = order.remove(from);
+    order.insert(to, moved);
+
+    conn.execute_batch("BEGIN")
+        .map_err(|e| format!("Failed to begin transaction: {}", e))?;
+    for (pos, id) in order.iter().enumerate() {
+        if let Err(e) = conn.execute(
+            "UPDATE playlists SET sort_order = ?1 WHERE id = ?2",
+            params![(pos + 1) as i64, id],
+        ) {
+            let _ = conn.execute_batch("ROLLBACK");
+            return Err(format!("Failed to reorder playlists: {}", e));
+        }
+    }
+    conn.execute_batch("COMMIT")
+        .map_err(|e| format!("Failed to commit reorder: {}", e))?;
+    Ok(())
+}
+
+pub fn rename_playlist(conn: &Connection, playlist_id: i64, name: &str) -> Result<(), String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err("Playlist name cannot be empty".to_string());
+    }
+    conn.execute(
+        "UPDATE playlists SET name = ?1, updated_at = datetime('now') WHERE id = ?2",
+        params![trimmed, playlist_id],
+    )
+    .map_err(|e| format!("Failed to rename playlist: {}", e))?;
+    Ok(())
 }
 
 pub fn delete_playlist(conn: &Connection, playlist_id: i64) -> Result<(), String> {
@@ -539,7 +657,7 @@ pub fn get_playlists(conn: &Connection) -> Result<Vec<Playlist>, String> {
              FROM playlists p
              LEFT JOIN playlist_tracks pt ON p.id = pt.playlist_id
              GROUP BY p.id
-             ORDER BY p.name",
+             ORDER BY p.sort_order, p.id",
         )
         .map_err(|e| format!("Query error: {}", e))?;
 
@@ -583,6 +701,52 @@ pub fn add_track_to_playlist(
     Ok(())
 }
 
+/// Move a playlist entry from one index to another (0-based, in position
+/// order) and rewrite all positions to stay contiguous.
+pub fn reorder_playlist_track(
+    conn: &Connection,
+    playlist_id: i64,
+    from: usize,
+    to: usize,
+) -> Result<(), String> {
+    let mut stmt = conn
+        .prepare("SELECT id FROM playlist_tracks WHERE playlist_id = ?1 ORDER BY position")
+        .map_err(|e| format!("Query error: {}", e))?;
+    let ids: Vec<i64> = stmt
+        .query_map(params![playlist_id], |row| row.get(0))
+        .map_err(|e| format!("Query error: {}", e))?
+        .flatten()
+        .collect();
+
+    if from >= ids.len() || to >= ids.len() {
+        return Err(format!(
+            "Reorder index out of range ({} -> {} of {})",
+            from,
+            to,
+            ids.len()
+        ));
+    }
+
+    let mut order = ids;
+    let moved = order.remove(from);
+    order.insert(to, moved);
+
+    conn.execute_batch("BEGIN")
+        .map_err(|e| format!("Failed to begin transaction: {}", e))?;
+    for (pos, id) in order.iter().enumerate() {
+        if let Err(e) = conn.execute(
+            "UPDATE playlist_tracks SET position = ?1 WHERE id = ?2",
+            params![(pos + 1) as i64, id],
+        ) {
+            let _ = conn.execute_batch("ROLLBACK");
+            return Err(format!("Failed to reorder: {}", e));
+        }
+    }
+    conn.execute_batch("COMMIT")
+        .map_err(|e| format!("Failed to commit reorder: {}", e))?;
+    Ok(())
+}
+
 pub fn remove_track_from_playlist(
     conn: &Connection,
     playlist_id: i64,
@@ -623,6 +787,124 @@ pub fn get_playlist_tracks(conn: &Connection, playlist_id: i64) -> Result<Vec<Tr
         }
     }
     Ok(tracks)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_conn() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        apply_schema(&conn).unwrap();
+        conn
+    }
+
+    #[test]
+    fn playlists_have_stable_manual_order() {
+        let conn = test_conn();
+        let a = create_playlist(&conn, "Alpha").unwrap();
+        let _b = create_playlist(&conn, "Beta").unwrap();
+        let _c = create_playlist(&conn, "Gamma").unwrap();
+
+        // Default order = creation order
+        let names: Vec<String> = get_playlists(&conn).unwrap().iter().map(|p| p.name.clone()).collect();
+        assert_eq!(names, vec!["Alpha", "Beta", "Gamma"]);
+
+        // Move Alpha to the end
+        reorder_playlists(&conn, 0, 2).unwrap();
+        let names: Vec<String> = get_playlists(&conn).unwrap().iter().map(|p| p.name.clone()).collect();
+        assert_eq!(names, vec!["Beta", "Gamma", "Alpha"]);
+
+        // Renaming must not disturb the manual order
+        rename_playlist(&conn, a, "Zeta").unwrap();
+        let names: Vec<String> = get_playlists(&conn).unwrap().iter().map(|p| p.name.clone()).collect();
+        assert_eq!(names, vec!["Beta", "Gamma", "Zeta"]);
+
+        assert!(reorder_playlists(&conn, 0, 9).is_err());
+    }
+
+    #[test]
+    fn rename_playlist_updates_name() {
+        let conn = test_conn();
+        let id = create_playlist(&conn, "old name").unwrap();
+        rename_playlist(&conn, id, "new name").unwrap();
+        let names: Vec<String> = get_playlists(&conn).unwrap().iter().map(|p| p.name.clone()).collect();
+        assert_eq!(names, vec!["new name"]);
+        // Blank names are rejected
+        assert!(rename_playlist(&conn, id, "   ").is_err());
+    }
+
+    #[test]
+    fn duplicate_candidates_include_hidden_and_hiding_removes_from_library() {
+        let conn = test_conn();
+        conn.execute(
+            "INSERT INTO tracks (file_path, file_name, title, artist, bitrate) VALUES
+             ('C:/a.flac', 'a.flac', 'Same Song', 'Artist', 1411),
+             ('C:/b.mp3', 'b.mp3', 'Same Song', 'Artist', 320),
+             ('C:/c.flac', 'c.flac', 'Other Song', 'Artist', 1411)",
+            [],
+        )
+        .unwrap();
+
+        // Both same-titled tracks are candidates; the unrelated one is not
+        let cands = get_duplicate_candidates(&conn).unwrap();
+        assert_eq!(cands.len(), 2);
+        assert!(cands.iter().all(|c| !c.hidden));
+
+        // Hide the low-bitrate copy (keeper = track 1)
+        set_track_hidden(&conn, 2, Some(1)).unwrap();
+        let visible = get_tracks(&conn, "title", "asc", None).unwrap();
+        assert!(visible.iter().all(|t| t.file_name != "b.mp3"), "hidden track must leave the library");
+        // The kept track's d!? flag clears once its twin is hidden
+        assert!(!visible.iter().find(|t| t.file_name == "a.flac").unwrap().dup_flag);
+
+        // Candidates still list the hidden one, marked hidden, so it can be unticked
+        let cands = get_duplicate_candidates(&conn).unwrap();
+        assert_eq!(cands.len(), 2);
+        assert!(cands.iter().find(|c| c.track.file_name == "b.mp3").unwrap().hidden);
+
+        // Unhide restores it
+        set_track_hidden(&conn, 2, None).unwrap();
+        let visible = get_tracks(&conn, "title", "asc", None).unwrap();
+        assert!(visible.iter().any(|t| t.file_name == "b.mp3"));
+    }
+
+    #[test]
+    fn reorder_playlist_moves_track_and_keeps_positions_contiguous() {
+        let conn = test_conn();
+        for i in 1..=3 {
+            conn.execute(
+                "INSERT INTO tracks (file_path, file_name) VALUES (?1, ?2)",
+                params![format!("C:/t{i}.flac"), format!("t{i}.flac")],
+            )
+            .unwrap();
+        }
+        let pl = create_playlist(&conn, "p").unwrap();
+        for i in 1..=3 {
+            add_track_to_playlist(&conn, pl, i).unwrap();
+        }
+
+        // Move the first entry to the end: [1,2,3] -> [2,3,1]
+        reorder_playlist_track(&conn, pl, 0, 2).unwrap();
+        let names: Vec<String> = get_playlist_tracks(&conn, pl)
+            .unwrap()
+            .iter()
+            .map(|t| t.file_name.clone())
+            .collect();
+        assert_eq!(names, vec!["t2.flac", "t3.flac", "t1.flac"]);
+
+        // Move it back to the front: [2,3,1] -> [1,2,3]
+        reorder_playlist_track(&conn, pl, 2, 0).unwrap();
+        let names: Vec<String> = get_playlist_tracks(&conn, pl)
+            .unwrap()
+            .iter()
+            .map(|t| t.file_name.clone())
+            .collect();
+        assert_eq!(names, vec!["t1.flac", "t2.flac", "t3.flac"]);
+
+        // Out-of-range indices are rejected
+        assert!(reorder_playlist_track(&conn, pl, 0, 5).is_err());
+    }
 }
 
 /// Store lyrics for a track.

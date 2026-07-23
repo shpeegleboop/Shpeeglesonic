@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { type Track, usePlayerStore } from '../../stores/playerStore';
 import { usePlaylist, type Playlist } from '../../hooks/usePlaylist';
+import { useLibrary } from '../../hooks/useLibrary';
 import { useAudioPlayer } from '../../hooks/useAudioPlayer';
 import { invoke } from '@tauri-apps/api/core';
 
@@ -43,6 +45,7 @@ export function TrackContextMenu({ track, x, y, onClose, onEditMetadata }: Track
   const [newPlaylistName, setNewPlaylistName] = useState('');
   const [creatingPlaylist, setCreatingPlaylist] = useState(false);
   const playlist = usePlaylist();
+  const library = useLibrary();
   const player = useAudioPlayer();
 
   useEffect(() => {
@@ -92,6 +95,8 @@ export function TrackContextMenu({ track, x, y, onClose, onEditMetadata }: Track
   const handleToggleFavorite = async () => {
     try {
       await invoke('toggle_favorite', { trackId: track.id });
+      // Refresh the shared library state so the Favorites view/count update
+      library.fetchTracks();
     } catch (e) {
       console.error('Failed to toggle favorite:', e);
     }
@@ -119,7 +124,10 @@ export function TrackContextMenu({ track, x, y, onClose, onEditMetadata }: Track
 
   const menuItemClass = 'px-3 py-1.5 text-sm hover:bg-neon-purple/20 cursor-pointer transition-colors text-gray-200 hover:text-white';
 
-  return (
+  // Portal to <body>: an ancestor with backdrop-filter (e.g. the queue's
+  // glass-surface) becomes the containing block for position:fixed and its
+  // overflow-hidden would clip the menu into invisibility.
+  return createPortal(
     <div ref={menuRef} style={style} className="bg-cosmic-surface border border-cosmic-border/60 rounded-lg shadow-xl shadow-black/50 py-1 min-w-[200px] backdrop-blur-xl">
       <div className={menuItemClass} onClick={handlePlay}>
         Play
@@ -144,7 +152,10 @@ export function TrackContextMenu({ track, x, y, onClose, onEditMetadata }: Track
         </div>
 
         {showPlaylistSub && (
-          <div className="absolute left-full top-0 ml-1 bg-cosmic-surface border border-cosmic-border/60 rounded-lg shadow-xl shadow-black/50 py-1 min-w-[180px]">
+          <div className={`absolute top-0 bg-cosmic-surface border border-cosmic-border/60 rounded-lg shadow-xl shadow-black/50 py-1 min-w-[180px] ${
+            /* Open leftward when the menu hugs the right screen edge (queue) */
+            x > window.innerWidth - 420 ? 'right-full mr-1' : 'left-full ml-1'
+          }`}>
             {playlist.playlists.map((pl) => (
               <div
                 key={pl.id}
@@ -195,6 +206,7 @@ export function TrackContextMenu({ track, x, y, onClose, onEditMetadata }: Track
           Edit Metadata…
         </div>
       )}
-    </div>
+    </div>,
+    document.body
   );
 }

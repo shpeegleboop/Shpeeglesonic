@@ -285,6 +285,51 @@ pub fn get_playlists(db: State<'_, DbPool>) -> Result<Vec<db::Playlist>, String>
 }
 
 #[command]
+pub fn reorder_playlists(from: usize, to: usize, db: State<'_, DbPool>) -> Result<(), String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    db::reorder_playlists(&conn, from, to)
+}
+
+#[command]
+pub fn rename_playlist(
+    playlist_id: i64,
+    name: String,
+    db: State<'_, DbPool>,
+) -> Result<(), String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    db::rename_playlist(&conn, playlist_id, &name)
+}
+
+#[command]
+pub fn get_duplicate_candidates(
+    db: State<'_, DbPool>,
+) -> Result<Vec<db::DuplicateCandidate>, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    db::get_duplicate_candidates(&conn)
+}
+
+#[command]
+pub fn set_track_hidden(
+    track_id: i64,
+    duplicate_of: Option<i64>,
+    db: State<'_, DbPool>,
+) -> Result<(), String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    db::set_track_hidden(&conn, track_id, duplicate_of)
+}
+
+#[command]
+pub fn reorder_playlist_track(
+    playlist_id: i64,
+    from: usize,
+    to: usize,
+    db: State<'_, DbPool>,
+) -> Result<(), String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    db::reorder_playlist_track(&conn, playlist_id, from, to)
+}
+
+#[command]
 pub fn add_track_to_playlist(
     playlist_id: i64,
     track_id: i64,

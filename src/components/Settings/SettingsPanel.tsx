@@ -1,14 +1,15 @@
 import { useEffect, useState } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
-import { invoke } from '@tauri-apps/api/core';
 import { useLibrary } from '../../hooks/useLibrary';
 import { usePlayerStore } from '../../stores/playerStore';
+import { DuplicatesModal } from '../Library/DuplicatesModal';
 
 export function SettingsPanel() {
   const library = useLibrary();
   const vizSettings = usePlayerStore((s) => s.visualizerSettings);
   const updateViz = usePlayerStore((s) => s.updateVisualizerSettings);
   const [scanStatus, setScanStatus] = useState<{ ok: boolean; text: string } | null>(null);
+  const [showDuplicates, setShowDuplicates] = useState(false);
 
   useEffect(() => {
     library.fetchFolders();
@@ -97,25 +98,15 @@ export function SettingsPanel() {
             share a title &amp; artist with another file — edit their metadata to confirm or dismiss.
           </p>
           <button
-            onClick={async () => {
-              setScanStatus(null);
-              try {
-                const n = await invoke<number>('collapse_duplicates');
-                setScanStatus({
-                  ok: true,
-                  text: n > 0 ? `Collapsed ${n} identical duplicate${n === 1 ? '' : 's'}` : 'No identical duplicates found',
-                });
-                library.fetchTracks();
-              } catch (e) {
-                setScanStatus({ ok: false, text: `Duplicate scan failed: ${e}` });
-              }
-            }}
+            onClick={() => setShowDuplicates(true)}
             className="btn-primary"
             disabled={library.loading}
           >
-            Collapse Identical Duplicates
+            Show Potential Duplicates
           </button>
         </div>
+
+        {showDuplicates && <DuplicatesModal onClose={() => setShowDuplicates(false)} />}
       </section>
 
       {/* Visualizer Settings */}

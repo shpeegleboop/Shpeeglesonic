@@ -1,5 +1,50 @@
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
+import { persist, type PersistStorage } from 'zustand/middleware';
+
+const PERSIST_KEY = 'shpeeglesonic-player';
+
+/** Sentinel "playlist" id for the built-in Favorites view in the sidebar. */
+export const FAVORITES_PLAYLIST_ID = -1;
+const PERSIST_THROTTLE_MS = 500;
+
+// Throttled persist storage. Every store change persists the WHOLE partialized
+// state — with a full-library queue that's ~2MB of JSON — and currentTime
+// updates arrive at 15Hz during playback. Unthrottled, that's tens of MB/s of
+// serialization garbage plus synchronous localStorage writes, enough to OOM
+// the webview over a long session. Coalesce to at most one write per interval,
+// flushing on pagehide so the last state survives app close.
+const throttledStorage: PersistStorage<any> = (() => {
+  let timer: number | null = null;
+  let latest: unknown = null;
+
+  const flush = () => {
+    if (latest !== null) {
+      localStorage.setItem(PERSIST_KEY, JSON.stringify(latest));
+      latest = null;
+    }
+  };
+
+  if (typeof window !== 'undefined') {
+    window.addEventListener('pagehide', flush);
+  }
+
+  return {
+    getItem: (name) => {
+      const s = localStorage.getItem(name);
+      return s ? JSON.parse(s) : null;
+    },
+    setItem: (_name, value) => {
+      latest = value;
+      if (timer === null) {
+        timer = window.setTimeout(() => {
+          timer = null;
+          flush();
+        }, PERSIST_THROTTLE_MS);
+      }
+    },
+    removeItem: (name) => localStorage.removeItem(name),
+  };
+})();
 
 export interface Track {
   id: number;
@@ -26,6 +71,8 @@ export interface Track {
   play_count: number;
   favorited: boolean;
   dup_flag: boolean;
+  /** Frontend-only annotation used by the library's "Playlist" grouping */
+  playlist_label?: string;
 }
 
 export interface TrackInfo {
@@ -87,6 +134,7 @@ interface PlayerState {
   // Visualizer
   visualizerMode: VisualizerType;
   visualizerFullscreen: boolean;
+  artZoomVisible: boolean; // album-art lightbox (transient, not persisted)
   visualizerSettings: {
     sensitivity: number;
     speed: number;
@@ -95,6 +143,12 @@ interface PlayerState {
     quality: 'low' | 'medium' | 'high';
     mandelbrotPalette: 'cosmic' | 'acid' | 'fireice' | 'electric';
     mandelbrotHue: number; // 0-360 shift applied to the palette
+    // Rotating Spiral effect toggles
+    spiralShockwaves: boolean;
+    spiralSpectrumArms: boolean;
+    spiralSpectrumStrength: number; // 0-1 — how hard the FFT bends the arms
+    spiralGroovePump: boolean;
+    spiralLivingDynamics: boolean;
   };
 
   // UI
@@ -119,6 +173,7 @@ interface PlayerState {
   setQueue: (tracks: Track[], startIndex?: number) => void;
   addToQueue: (track: Track) => void;
   playNext: (track: Track) => void;
+  reorderQueue: (from: number, to: number) => void;
   removeFromQueue: (index: number) => void;
   clearQueue: () => void;
   nextTrack: () => Track | null;
@@ -126,6 +181,7 @@ interface PlayerState {
   setQueueIndex: (index: number) => void;
   setVisualizerMode: (mode: VisualizerType) => void;
   setVisualizerFullscreen: (fs: boolean) => void;
+  setArtZoomVisible: (v: boolean) => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
   setCurrentView: (view: ViewMode) => void;
   setLyricsVisible: (visible: boolean) => void;
@@ -159,6 +215,7 @@ export const usePlayerStore = create<PlayerState>()(
 
   visualizerMode: 'spectrogram',
   visualizerFullscreen: false,
+  artZoomVisible: false,
   visualizerSettings: {
     sensitivity: 1.0,
     speed: 1.0,
@@ -167,6 +224,11 @@ export const usePlayerStore = create<PlayerState>()(
     quality: 'medium',
     mandelbrotPalette: 'cosmic',
     mandelbrotHue: 0,
+    spiralShockwaves: true,
+    spiralSpectrumArms: true,
+    spiralSpectrumStrength: 0.5,
+    spiralGroovePump: true,
+    spiralLivingDynamics: true,
   },
 
   sidebarCollapsed: false,
@@ -228,11 +290,23 @@ export const usePlayerStore = create<PlayerState>()(
   },
 
   setQueue: (tracks, startIndex = 0) =>
-    set({
-      queue: tracks,
-      originalQueue: tracks,
-      queueIndex: startIndex,
-      playHistory: [],
+    set((s) => {
+      // If the user has shuffle on, honor it for the new queue too —
+      // previously the flag stayed lit while the queue played in order.
+      if (!s.shuffleEnabled || tracks.length < 2) {
+        return { queue: tracks, originalQueue: tracks, queueIndex: startIndex, playHistory: [] };
+      }
+      const shuffled = [...tracks];
+      for (let i = shuffled.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+      }
+      const sel = tracks[startIndex];
+      if (sel) {
+        const idx = shuffled.findIndex((t) => t.id === sel.id && t.file_path === sel.file_path);
+        if (idx > 0) [shuffled[0], shuffled[idx]] = [shuffled[idx], shuffled[0]];
+      }
+      return { queue: shuffled, originalQueue: tracks, queueIndex: 0, playHistory: [] };
     }),
 
   addToQueue: (track) =>
@@ -245,7 +319,37 @@ export const usePlayerStore = create<PlayerState>()(
     set((s) => {
       const newQueue = [...s.queue];
       newQueue.splice(s.queueIndex + 1, 0, track);
-      return { queue: newQueue };
+      // Mirror the insert into originalQueue (after the current track's
+      // original position) — otherwise toggling shuffle off restores the
+      // pre-insert snapshot and silently drops the track.
+      const current = s.queue[s.queueIndex];
+      const newOriginal = [...s.originalQueue];
+      const oi = current
+        ? newOriginal.findIndex((t) => t.id === current.id && t.file_path === current.file_path)
+        : -1;
+      newOriginal.splice(oi >= 0 ? oi + 1 : newOriginal.length, 0, track);
+      return { queue: newQueue, originalQueue: newOriginal };
+    }),
+
+  reorderQueue: (from, to) =>
+    set((s) => {
+      if (from === to || from < 0 || to < 0 || from >= s.queue.length || to >= s.queue.length) {
+        return {};
+      }
+      const queue = [...s.queue];
+      const [moved] = queue.splice(from, 1);
+      queue.splice(to, 0, moved);
+
+      // Keep the playing index pointed at the same track
+      let queueIndex = s.queueIndex;
+      if (from === queueIndex) queueIndex = to;
+      else if (from < queueIndex && to >= queueIndex) queueIndex -= 1;
+      else if (from > queueIndex && to <= queueIndex) queueIndex += 1;
+
+      // When unshuffled the visible order IS the canonical order; while
+      // shuffled, the reorder applies to the shuffled view only.
+      const originalQueue = s.shuffleEnabled ? s.originalQueue : [...queue];
+      return { queue, queueIndex, originalQueue };
     }),
 
   removeFromQueue: (index) =>
@@ -314,6 +418,7 @@ export const usePlayerStore = create<PlayerState>()(
   setQueueIndex: (index) => set({ queueIndex: index }),
   setVisualizerMode: (mode) => set({ visualizerMode: mode }),
   setVisualizerFullscreen: (fs) => set({ visualizerFullscreen: fs }),
+  setArtZoomVisible: (v) => set({ artZoomVisible: v }),
   setSidebarCollapsed: (collapsed) => set({ sidebarCollapsed: collapsed }),
   setCurrentView: (view) => set({ currentView: view }),
   setLyricsVisible: (visible) => set({ lyricsVisible: visible }),
@@ -326,7 +431,8 @@ export const usePlayerStore = create<PlayerState>()(
   setSelectedPlaylistId: (id) => set({ selectedPlaylistId: id }),
     }),
     {
-      name: 'shpeeglesonic-player',
+      name: PERSIST_KEY,
+      storage: throttledStorage,
       // Everything worth keeping across restarts. Live playback state
       // (isPlaying, currentTime, trackInfo) intentionally resets.
       partialize: (s) => ({

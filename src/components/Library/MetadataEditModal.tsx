@@ -1,7 +1,9 @@
 import { useState } from 'react';
+import { createPortal } from 'react-dom';
 import { invoke } from '@tauri-apps/api/core';
 import { type Track } from '../../stores/playerStore';
 import { CloseIcon } from '../Icons';
+import { FormatBadge } from '../Player/FormatBadge';
 
 interface MetadataEditModalProps {
   track: Track;
@@ -60,7 +62,9 @@ export function MetadataEditModal({ track, onClose, onSaved }: MetadataEditModal
     </label>
   );
 
-  return (
+  // Portal to <body> so backdrop-filter ancestors (queue sidebar) can't
+  // become the containing block and clip this fixed overlay.
+  return createPortal(
     <div
       className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-6"
       onMouseDown={(e) => {
@@ -78,9 +82,17 @@ export function MetadataEditModal({ track, onClose, onSaved }: MetadataEditModal
           </button>
         </div>
 
-        <p className="text-xs text-gray-500 font-mono truncate" title={track.file_path}>
-          {track.file_name}
+        <p className="text-xs text-gray-500 font-mono break-all">
+          {track.file_path}
         </p>
+
+        {/* Audio quality — helps judge which duplicate to keep */}
+        <FormatBadge
+          format={track.format}
+          sampleRate={track.sample_rate}
+          bitDepth={track.bit_depth}
+          bitrate={track.bitrate}
+        />
 
         <div className="space-y-3">
           {field('Title', title, setTitle, { autoFocus: true })}
@@ -109,6 +121,7 @@ export function MetadataEditModal({ track, onClose, onSaved }: MetadataEditModal
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

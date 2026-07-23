@@ -27,7 +27,7 @@ cpal = "0.17.3"
 rubato = "1.0.1"
 ringbuf = "0.4.8"
 crossbeam-channel = "0.5.15"
-symphonia = { version = "0.5.5", features = ["mp3", "flac", "wav", "pcm", "aac", "vorbis", "isomp4"] }
+symphonia = { version = "0.5.5", features = ["mp3", "flac", "wav", "pcm", "aac", "vorbis", "isomp4", "aiff", "alac"] }
 audioadapter-buffers = "2.0.0"
 rusqlite = { version = "0.38.0", features = ["bundled"] }
 lofty = "0.23.2"

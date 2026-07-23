@@ -215,6 +215,61 @@ pub fn decode_file(path: &str) -> Result<DecodedAudio, String> {
     })
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixture(name: &str) -> String {
+        format!("{}/tests/fixtures/{}", env!("CARGO_MANIFEST_DIR"), name)
+    }
+
+    #[test]
+    fn probes_aiff_natively() {
+        let (sr, ch, dur, _, _) =
+            probe_file_info(&fixture("tone.aiff")).expect("AIFF probe should succeed");
+        assert_eq!(sr, 44100);
+        assert_eq!(ch, 2);
+        assert!((dur - 0.5).abs() < 0.05, "expected ~0.5s duration, got {}", dur);
+    }
+
+    #[test]
+    fn decodes_aiff_natively() {
+        let audio = decode_file(&fixture("tone.aiff")).expect("AIFF decode should succeed");
+        assert_eq!(audio.sample_rate, 44100);
+        assert_eq!(audio.channels, 2);
+        let expected = 44100.0 * 0.5 * 2.0;
+        assert!(
+            (audio.samples.len() as f64 - expected).abs() < expected * 0.05,
+            "expected ~{} samples, got {}",
+            expected,
+            audio.samples.len()
+        );
+    }
+
+    #[test]
+    fn probes_alac_natively() {
+        let (sr, ch, dur, _, _) =
+            probe_file_info(&fixture("tone-alac.m4a")).expect("ALAC probe should succeed");
+        assert_eq!(sr, 44100);
+        assert_eq!(ch, 2);
+        assert!((dur - 0.5).abs() < 0.05, "expected ~0.5s duration, got {}", dur);
+    }
+
+    #[test]
+    fn decodes_alac_natively() {
+        let audio = decode_file(&fixture("tone-alac.m4a")).expect("ALAC decode should succeed");
+        assert_eq!(audio.sample_rate, 44100);
+        assert_eq!(audio.channels, 2);
+        let expected = 44100.0 * 0.5 * 2.0;
+        assert!(
+            (audio.samples.len() as f64 - expected).abs() < expected * 0.05,
+            "expected ~{} samples, got {}",
+            expected,
+            audio.samples.len()
+        );
+    }
+}
+
 /// Convert an AudioBufferRef to interleaved f32 samples and append to output.
 pub fn append_samples(buf: &AudioBufferRef, output: &mut Vec<f32>, channels: u16) {
     let ch = channels as usize;

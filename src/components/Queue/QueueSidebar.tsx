@@ -1,11 +1,19 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { usePlayerStore } from '../../stores/playerStore';
+import { usePlayerStore, type Track } from '../../stores/playerStore';
 import { useAudioPlayer } from '../../hooks/useAudioPlayer';
 import { formatDuration, trackDisplayTitle, trackDisplayArtist } from '../../utils/formatters';
 import { QueueIcon, CloseIcon, TrashIcon, PlayIcon, PauseIcon } from '../Icons';
+import { TrackContextMenu } from '../Library/TrackContextMenu';
+import { MetadataEditModal } from '../Library/MetadataEditModal';
+import { ConfirmDialog } from '../ConfirmDialog';
 
 export function QueueSidebar() {
+  const [contextMenu, setContextMenu] = useState<{ track: Track; x: number; y: number } | null>(null);
+  const [editingTrack, setEditingTrack] = useState<Track | null>(null);
+  const [confirmClear, setConfirmClear] = useState(false);
+  const dragFromRef = useRef<number | null>(null);
+  const [dropTarget, setDropTarget] = useState<number | null>(null);
   const queue = usePlayerStore((s) => s.queue);
   const queueIndex = usePlayerStore((s) => s.queueIndex);
   const queueVisible = usePlayerStore((s) => s.queueVisible);
@@ -44,7 +52,7 @@ export function QueueSidebar() {
         </span>
         {queue.length > 0 && (
           <button
-            onClick={() => usePlayerStore.getState().clearQueue()}
+            onClick={() => setConfirmClear(true)}
             className="text-gray-500 hover:text-red-400 p-0.5 rounded hover:bg-white/5 transition-colors"
             title="Clear queue"
           >
@@ -108,10 +116,40 @@ export function QueueSidebar() {
                   }}
                   className={`group px-2 py-1.5 cursor-pointer border-b border-cosmic-border/10 hover:bg-cosmic-hover transition-colors flex items-center gap-2 ${
                     isCurrent ? 'bg-neon-purple/10 border-l-2 border-l-neon-purple' : ''
-                  } ${isPast ? 'opacity-50' : ''}`}
+                  } ${isPast ? 'opacity-50' : ''} ${
+                    dropTarget === item.index ? 'border-t-2 border-t-neon-purple' : ''
+                  }`}
+                  draggable
+                  onDragStart={(e) => {
+                    dragFromRef.current = item.index;
+                    e.dataTransfer.effectAllowed = 'move';
+                    // A drag with no payload is refused by some engines
+                    e.dataTransfer.setData('text/plain', String(item.index));
+                  }}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = 'move';
+                    if (dropTarget !== item.index) setDropTarget(item.index);
+                  }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    if (dragFromRef.current !== null) {
+                      usePlayerStore.getState().reorderQueue(dragFromRef.current, item.index);
+                    }
+                    dragFromRef.current = null;
+                    setDropTarget(null);
+                  }}
+                  onDragEnd={() => {
+                    dragFromRef.current = null;
+                    setDropTarget(null);
+                  }}
                   onDoubleClick={() => {
                     usePlayerStore.getState().setQueueIndex(item.index);
                     player.playTrack(track);
+                  }}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    setContextMenu({ track, x: e.clientX, y: e.clientY });
                   }}
                   title="Double-click to play"
                 >
@@ -156,6 +194,37 @@ export function QueueSidebar() {
             })}
           </div>
         </div>
+      )}
+
+      {contextMenu && (
+        <TrackContextMenu
+          track={contextMenu.track}
+          x={contextMenu.x}
+          y={contextMenu.y}
+          onClose={() => setContextMenu(null)}
+          onEditMetadata={(track) => setEditingTrack(track)}
+        />
+      )}
+
+      {editingTrack && (
+        <MetadataEditModal
+          track={editingTrack}
+          onClose={() => setEditingTrack(null)}
+          onSaved={() => {}}
+        />
+      )}
+
+      {confirmClear && (
+        <ConfirmDialog
+          title="Clear the queue?"
+          message={`${queue.length} track${queue.length === 1 ? '' : 's'} will be removed from the queue. Nothing is deleted from your library.`}
+          confirmLabel="Clear"
+          onConfirm={() => {
+            usePlayerStore.getState().clearQueue();
+            setConfirmClear(false);
+          }}
+          onCancel={() => setConfirmClear(false)}
+        />
       )}
     </aside>
   );

@@ -89,7 +89,7 @@ export function Spectrogram({ fftRef, lastUpdateRef, width, height }: Spectrogra
       ref={canvasRef}
       width={width}
       height={height}
-      className="block"
+      className="block w-full h-full"
     />
   );
 }

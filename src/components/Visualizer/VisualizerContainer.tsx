@@ -75,6 +75,12 @@ export function VisualizerContainer({ inline }: VisualizerContainerProps) {
     }
   };
 
+  // While the fullscreen overlay owns rendering, inline instances go dormant —
+  // otherwise a second full-res visualizer keeps animating underneath it.
+  if (fullscreen && inline) {
+    return <div className="w-full h-full" />;
+  }
+
   if (fullscreen && !inline) {
     return (
       <div

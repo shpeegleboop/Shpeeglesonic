@@ -7,6 +7,7 @@ import { TopNav } from './components/Layout/TopNav';
 import { Sidebar } from './components/Layout/Sidebar';
 import { BottomBar } from './components/Layout/BottomBar';
 import { NowPlaying } from './components/Player/NowPlaying';
+import { ArtLightbox } from './components/Player/ArtLightbox';
 import { SettingsPanel } from './components/Settings/SettingsPanel';
 import { LyricsPanel } from './components/Lyrics/LyricsPanel';
 import { VisualizerContainer } from './components/Visualizer/VisualizerContainer';
@@ -79,6 +80,18 @@ function App() {
     }
   }, []);
 
+  // Suppress the WebView2 default context menu (Refresh/Print/Save as…) —
+  // the app provides its own menus. Text fields keep theirs for copy/paste.
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t?.closest('input, textarea, [contenteditable="true"]')) return;
+      e.preventDefault();
+    };
+    document.addEventListener('contextmenu', handler);
+    return () => document.removeEventListener('contextmenu', handler);
+  }, []);
+
   // Prevent double-click from opening new windows in Tauri WebView
   useEffect(() => {
     const preventNav = (e: MouseEvent) => {
@@ -127,6 +140,7 @@ function App() {
       </div>
 
       {visualizerFullscreen && <VisualizerContainer />}
+      <ArtLightbox />
       <ErrorToast />
     </div>
   );

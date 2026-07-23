@@ -11,6 +11,7 @@ const sortOptions = [
   { value: 'album', label: 'Album' },
   { value: 'title', label: 'Title' },
   { value: 'genre', label: 'Genre' },
+  { value: 'playlist', label: 'Playlist' },
   { value: 'year', label: 'Year' },
   { value: 'bpm', label: 'BPM' },
   { value: 'duration', label: 'Duration' },

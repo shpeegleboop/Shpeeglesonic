@@ -10,6 +10,7 @@ import {
   formatBitDepth,
 } from '../../utils/formatters';
 import { TrackContextMenu } from './TrackContextMenu';
+import { GroupContextMenu } from './GroupContextMenu';
 import { MetadataEditModal } from './MetadataEditModal';
 import { RenameGroupModal } from './RenameGroupModal';
 import { ChevronRightIcon, ChevronDownIcon, MusicNoteIcon } from '../Icons';
@@ -20,10 +21,16 @@ interface TrackListProps {
   sortBy?: string;
   /** Called after metadata edits so the parent can refetch with its current sort/search */
   onLibraryChanged?: () => void;
+  emptyTitle?: string;
+  emptySubtitle?: string;
+  /** Enables drag-to-reorder (playlist views). Only active when ungrouped. */
+  onReorder?: (from: number, to: number) => void;
 }
 
 // Sort fields that should show grouped/collapsible headers
-const GROUPABLE_SORTS = ['artist', 'album', 'genre'];
+const GROUPABLE_SORTS = ['artist', 'album', 'genre', 'year', 'format', 'playlist'];
+// Subset whose group value is a real tag that can be renamed
+const RENAMEABLE_SORTS = ['artist', 'album', 'genre'];
 
 // Get a metadata badge value for the current sort
 function getSortMeta(track: Track, sortBy: string): string {
@@ -54,22 +61,39 @@ function getGroupValue(track: Track, sortBy: string): { value: string | null; la
       return { value: track.album ?? null, label: track.album || 'Unknown Album' };
     case 'genre':
       return { value: track.genre ?? null, label: track.genre || 'Unknown Genre' };
+    case 'year':
+      return { value: track.year ? String(track.year) : null, label: track.year ? String(track.year) : 'Unknown Year' };
+    case 'format':
+      return { value: track.format ?? null, label: track.format ? track.format.toUpperCase() : 'Unknown Format' };
+    case 'playlist':
+      return { value: track.playlist_label ?? null, label: track.playlist_label || 'Not in a Playlist' };
     default:
       return { value: null, label: '' };
   }
 }
 
 type VirtualRow =
-  | { type: 'header'; key: string; label: string; rawValue: string | null; count: number }
+  | { type: 'header'; key: string; label: string; rawValue: string | null; count: number; groupTracks: Track[] }
   | { type: 'track'; key: string; track: Track; trackIndex: number };
 
-export function TrackList({ tracks, onPlay, sortBy = 'title', onLibraryChanged }: TrackListProps) {
+export function TrackList({ tracks, onPlay, sortBy = 'title', onLibraryChanged, emptyTitle, emptySubtitle, onReorder }: TrackListProps) {
   const parentRef = useRef<HTMLDivElement>(null);
   const currentTrack = usePlayerStore((s) => s.currentTrack);
   const [contextMenu, setContextMenu] = useState<{ track: Track; x: number; y: number } | null>(null);
-  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+  // Tracks EXPANDED groups (empty = everything collapsed, the default view)
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const [editingTrack, setEditingTrack] = useState<Track | null>(null);
   const [renamingGroup, setRenamingGroup] = useState<{ label: string; rawValue: string | null; count: number } | null>(null);
+  const [groupMenu, setGroupMenu] = useState<{
+    label: string;
+    rawValue: string | null;
+    count: number;
+    tracks: Track[];
+    x: number;
+    y: number;
+  } | null>(null);
+  const dragFromRef = useRef<number | null>(null);
+  const [dropTarget, setDropTarget] = useState<number | null>(null);
 
   const isGrouped = GROUPABLE_SORTS.includes(sortBy);
   const showSortMeta = !isGrouped && sortBy !== 'title' && sortBy !== 'date_added' && sortBy !== 'duration';
@@ -108,9 +132,10 @@ export function TrackList({ tracks, onPlay, sortBy = 'title', onLibraryChanged }
         label: group.label,
         rawValue: group.rawValue,
         count: group.tracks.length,
+        groupTracks: group.tracks.map((t) => t.track),
       });
 
-      if (!collapsedGroups.has(group.label)) {
+      if (expandedGroups.has(group.label)) {
         group.tracks.forEach(({ track, originalIndex }) => {
           virtualRows.push({
             type: 'track',
@@ -123,7 +148,7 @@ export function TrackList({ tracks, onPlay, sortBy = 'title', onLibraryChanged }
     });
 
     return { rows: virtualRows, groupLabels: groups.map((g) => g.label) };
-  }, [tracks, sortBy, isGrouped, collapsedGroups]);
+  }, [tracks, sortBy, isGrouped, expandedGroups]);
 
   const virtualizer = useVirtualizer({
     count: rows.length,
@@ -133,7 +158,7 @@ export function TrackList({ tracks, onPlay, sortBy = 'title', onLibraryChanged }
   });
 
   const toggleGroup = (label: string) => {
-    setCollapsedGroups((prev) => {
+    setExpandedGroups((prev) => {
       const next = new Set(prev);
       if (next.has(label)) {
         next.delete(label);
@@ -144,7 +169,7 @@ export function TrackList({ tracks, onPlay, sortBy = 'title', onLibraryChanged }
     });
   };
 
-  const allCollapsed = groupLabels.length > 0 && groupLabels.every((l) => collapsedGroups.has(l));
+  const allExpanded = groupLabels.length > 0 && groupLabels.every((l) => expandedGroups.has(l));
 
   if (tracks.length === 0) {
     return (
@@ -152,8 +177,8 @@ export function TrackList({ tracks, onPlay, sortBy = 'title', onLibraryChanged }
         <div className="mb-3 text-gray-600 opacity-40">
           <MusicNoteIcon size={32} />
         </div>
-        <p className="text-gray-500 text-sm">No tracks in library</p>
-        <p className="text-gray-600 text-xs mt-1">Add a folder in Settings</p>
+        <p className="text-gray-500 text-sm">{emptyTitle ?? 'No tracks in library'}</p>
+        <p className="text-gray-600 text-xs mt-1">{emptySubtitle ?? 'Add a folder in Settings'}</p>
       </div>
     );
   }
@@ -164,15 +189,16 @@ export function TrackList({ tracks, onPlay, sortBy = 'title', onLibraryChanged }
       {isGrouped && (
         <div className="flex items-center justify-between px-2 py-1 border-b border-cosmic-border/20 flex-shrink-0 select-none">
           <span className="text-[11px] text-gray-500">
-            {groupLabels.length} {sortBy === 'artist' ? 'artists' : sortBy === 'album' ? 'albums' : 'genres'}
+            {groupLabels.length}{' '}
+            {sortBy === 'artist' ? 'artists' : sortBy === 'album' ? 'albums' : sortBy === 'genre' ? 'genres' : sortBy === 'year' ? 'years' : sortBy === 'playlist' ? 'playlists' : 'formats'}
           </span>
           <button
             onClick={() =>
-              setCollapsedGroups(allCollapsed ? new Set() : new Set(groupLabels))
+              setExpandedGroups(allExpanded ? new Set() : new Set(groupLabels))
             }
             className="text-[11px] text-gray-500 hover:text-neon-purple transition-colors px-1.5 py-0.5 rounded hover:bg-white/5"
           >
-            {allCollapsed ? 'Expand all' : 'Collapse all'}
+            {allExpanded ? 'Collapse all' : 'Expand all'}
           </button>
         </div>
       )}
@@ -189,7 +215,7 @@ export function TrackList({ tracks, onPlay, sortBy = 'title', onLibraryChanged }
             const row = rows[item.index];
 
             if (row.type === 'header') {
-              const isCollapsed = collapsedGroups.has(row.label);
+              const isCollapsed = !expandedGroups.has(row.label);
               return (
                 <div
                   key={row.key}
@@ -206,9 +232,16 @@ export function TrackList({ tracks, onPlay, sortBy = 'title', onLibraryChanged }
                   onClick={() => toggleGroup(row.label)}
                   onContextMenu={(e) => {
                     e.preventDefault();
-                    setRenamingGroup({ label: row.label, rawValue: row.rawValue, count: row.count });
+                    setGroupMenu({
+                      label: row.label,
+                      rawValue: row.rawValue,
+                      count: row.count,
+                      tracks: row.groupTracks,
+                      x: e.clientX,
+                      y: e.clientY,
+                    });
                   }}
-                  title={`Right-click to rename this ${sortBy}`}
+                  title="Right-click for group options"
                 >
                   <span className="text-gray-500 w-4 flex-shrink-0">
                     {isCollapsed ? <ChevronRightIcon size={12} /> : <ChevronDownIcon size={12} />}
@@ -226,6 +259,7 @@ export function TrackList({ tracks, onPlay, sortBy = 'title', onLibraryChanged }
             const track = row.track;
             const isActive = currentTrack?.id === track.id && currentTrack?.file_path === track.file_path;
             const sortMetaValue = showSortMeta ? getSortMeta(track, sortBy) : '';
+            const canReorder = !!onReorder && !isGrouped;
 
             // In grouped mode, show simpler info (title only, since group header shows artist/album/genre)
             const showSubline = !isGrouped;
@@ -244,7 +278,49 @@ export function TrackList({ tracks, onPlay, sortBy = 'title', onLibraryChanged }
                 }}
                 className={`px-2 py-1.5 cursor-pointer border-b border-cosmic-border/10 hover:bg-cosmic-hover transition-colors select-none ${
                   isActive ? 'bg-neon-purple/10 border-l-2 border-l-neon-purple' : ''
-                } ${isGrouped ? 'pl-8' : ''}`}
+                } ${isGrouped ? 'pl-8' : ''} ${
+                  canReorder && dropTarget === row.trackIndex ? 'border-t-2 border-t-neon-purple' : ''
+                }`}
+                draggable={canReorder}
+                onDragStart={
+                  canReorder
+                    ? (e) => {
+                        dragFromRef.current = row.trackIndex;
+                        e.dataTransfer.effectAllowed = 'move';
+                        // A drag with no payload is refused by some engines
+                        e.dataTransfer.setData('text/plain', String(row.trackIndex));
+                      }
+                    : undefined
+                }
+                onDragOver={
+                  canReorder
+                    ? (e) => {
+                        e.preventDefault();
+                        e.dataTransfer.dropEffect = 'move';
+                        if (dropTarget !== row.trackIndex) setDropTarget(row.trackIndex);
+                      }
+                    : undefined
+                }
+                onDrop={
+                  canReorder
+                    ? (e) => {
+                        e.preventDefault();
+                        if (dragFromRef.current !== null && dragFromRef.current !== row.trackIndex) {
+                          onReorder(dragFromRef.current, row.trackIndex);
+                        }
+                        dragFromRef.current = null;
+                        setDropTarget(null);
+                      }
+                    : undefined
+                }
+                onDragEnd={
+                  canReorder
+                    ? () => {
+                        dragFromRef.current = null;
+                        setDropTarget(null);
+                      }
+                    : undefined
+                }
                 onDoubleClick={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
@@ -308,7 +384,22 @@ export function TrackList({ tracks, onPlay, sortBy = 'title', onLibraryChanged }
         />
       )}
 
-      {renamingGroup && GROUPABLE_SORTS.includes(sortBy) && (
+      {groupMenu && (
+        <GroupContextMenu
+          label={groupMenu.label}
+          tracks={groupMenu.tracks}
+          canRename={RENAMEABLE_SORTS.includes(sortBy)}
+          renameLabel={sortBy}
+          x={groupMenu.x}
+          y={groupMenu.y}
+          onClose={() => setGroupMenu(null)}
+          onRename={() =>
+            setRenamingGroup({ label: groupMenu.label, rawValue: groupMenu.rawValue, count: groupMenu.count })
+          }
+        />
+      )}
+
+      {renamingGroup && RENAMEABLE_SORTS.includes(sortBy) && (
         <RenameGroupModal
           field={sortBy as 'artist' | 'album' | 'genre'}
           label={renamingGroup.label}

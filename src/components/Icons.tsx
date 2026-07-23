@@ -196,3 +196,23 @@ export const QueueIcon = icon(
 export const FolderIcon = icon(
   <path d="M20 20H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2Z" />
 );
+
+export const LyricsIcon = icon(
+  <>
+    <path d="M4 5h16" />
+    <path d="M4 10h16" />
+    <path d="M4 15h9" />
+    <path d="M4 20h6" />
+    <circle cx="17.5" cy="18.5" r="1.8" />
+    <path d="M19.3 18.5V13l2-1" />
+  </>
+);
+
+export const HeartIcon = icon(
+  <path d="M19.5 12.57 12 20l-7.5-7.43a5 5 0 1 1 7.5-6.57 5 5 0 1 1 7.5 6.57Z" />
+);
+
+export const HeartFilledIcon = icon(
+  <path d="M19.5 12.57 12 20l-7.5-7.43a5 5 0 1 1 7.5-6.57 5 5 0 1 1 7.5 6.57Z" />,
+  true
+);

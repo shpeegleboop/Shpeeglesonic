@@ -120,7 +120,12 @@ export class BeatDetector {
   private attackSpeed = 0.5;     // envelope attack (higher = faster)
   private releaseSpeed = 0.92;   // envelope release (higher = slower)
 
-  update(bins: number[], sensitivity: number) {
+  /**
+   * dtScale = elapsed frame time / 16.67ms. Callers that pass it get
+   * frame-rate-independent decay (identical feel at 60Hz and 144Hz);
+   * omitting it keeps the legacy per-frame behavior.
+   */
+  update(bins: number[], sensitivity: number, dtScale = 1) {
     const raw = {
       subBass: getBandEnergy(bins, BANDS.subBass) * sensitivity,
       bass: getBandEnergy(bins, BANDS.bass) * sensitivity,
@@ -139,12 +144,18 @@ export class BeatDetector {
 
     const bandKeys = ['subBass', 'bass', 'mids', 'highs', 'air'] as const;
 
+    // Time-normalized coefficients (equal to the configured values at 60fps)
+    const pulseDecay = dtScale === 1 ? this.pulseDecay : Math.pow(this.pulseDecay, dtScale);
+    const avgSmoothing = dtScale === 1 ? this.avgSmoothing : Math.pow(this.avgSmoothing, dtScale);
+    const attack = dtScale === 1 ? this.attackSpeed : 1 - Math.pow(1 - this.attackSpeed, dtScale);
+    const release = dtScale === 1 ? this.releaseSpeed : Math.pow(this.releaseSpeed, dtScale);
+
     for (const key of bandKeys) {
       // Spectral flux: positive difference from previous frame
       const flux = Math.max(0, raw[key] - this.prevBands[key]);
 
       // Update rolling average
-      this.avgBands[key] = this.avgBands[key] * this.avgSmoothing + raw[key] * (1 - this.avgSmoothing);
+      this.avgBands[key] = this.avgBands[key] * avgSmoothing + raw[key] * (1 - avgSmoothing);
 
       // Onset detection: current energy significantly above rolling average
       const threshold = Math.max(this.avgBands[key] * this.onsetThreshold, 0.05);
@@ -155,14 +166,14 @@ export class BeatDetector {
         this.pulse[key] = Math.min(1.0, flux * 4 + 0.3);
       } else {
         // Decay pulse
-        this.pulse[key] *= this.pulseDecay;
+        this.pulse[key] *= pulseDecay;
       }
 
       // Asymmetric envelope follower: fast attack, slow release
       if (raw[key] > this.energy[key]) {
-        this.energy[key] = this.energy[key] * (1 - this.attackSpeed) + raw[key] * this.attackSpeed;
+        this.energy[key] = this.energy[key] * (1 - attack) + raw[key] * attack;
       } else {
-        this.energy[key] = this.energy[key] * this.releaseSpeed + raw[key] * (1 - this.releaseSpeed);
+        this.energy[key] = this.energy[key] * release + raw[key] * (1 - release);
       }
 
       this.prevBands[key] = raw[key];

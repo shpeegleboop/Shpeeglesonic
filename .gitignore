@@ -56,6 +56,8 @@ claude.md
 *.dff
 *.wv
 *.ape
+# Exception: tiny generated test tones the Rust decoder tests depend on
+!src-tauri/tests/fixtures/*
 
 # Database
 *.db

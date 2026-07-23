@@ -50,6 +50,24 @@ export function usePlaylist() {
     }
   }, [fetchPlaylists]);
 
+  const reorderPlaylists = useCallback(async (from: number, to: number) => {
+    try {
+      await invoke('reorder_playlists', { from, to });
+      await fetchPlaylists();
+    } catch (e) {
+      console.error('Failed to reorder playlists:', e);
+    }
+  }, [fetchPlaylists]);
+
+  const renamePlaylist = useCallback(async (playlistId: number, name: string) => {
+    try {
+      await invoke('rename_playlist', { playlistId, name });
+      await fetchPlaylists();
+    } catch (e) {
+      console.error('Failed to rename playlist:', e);
+    }
+  }, [fetchPlaylists]);
+
   const deletePlaylist = useCallback(async (playlistId: number) => {
     try {
       await invoke('delete_playlist', { playlistId });
@@ -77,6 +95,14 @@ export function usePlaylist() {
     }
   }, [fetchPlaylists]);
 
+  const reorderPlaylistTrack = useCallback(async (playlistId: number, from: number, to: number) => {
+    try {
+      await invoke('reorder_playlist_track', { playlistId, from, to });
+    } catch (e) {
+      console.error('Failed to reorder playlist:', e);
+    }
+  }, []);
+
   const fetchPlaylistTracks = useCallback(async (playlistId: number) => {
     try {
       const result = await invoke<Track[]>('get_playlist_tracks', { playlistId });
@@ -93,9 +119,12 @@ export function usePlaylist() {
     playlistTracks,
     fetchPlaylists,
     createPlaylist,
+    renamePlaylist,
+    reorderPlaylists,
     deletePlaylist,
     addTrackToPlaylist,
     removeTrackFromPlaylist,
+    reorderPlaylistTrack,
     fetchPlaylistTracks,
   };
 }

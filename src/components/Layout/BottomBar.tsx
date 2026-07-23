@@ -52,8 +52,13 @@ export function BottomBar() {
         </div>
       </div>
 
-      {/* Album art thumbnail */}
-      <div className="w-10 h-10 rounded-md overflow-hidden flex-shrink-0 ring-1 ring-white/10">
+      {/* Album art thumbnail — click to magnify */}
+      <div
+        data-testid="bottombar-art"
+        className={`w-10 h-10 rounded-md overflow-hidden flex-shrink-0 ring-1 ring-white/10 ${track ? 'cursor-zoom-in' : ''}`}
+        onClick={() => track && usePlayerStore.getState().setArtZoomVisible(true)}
+        title={track ? 'View album art' : undefined}
+      >
         {track ? (
           <AlbumArt track={track} size="sm" />
         ) : (
@@ -63,11 +68,16 @@ export function BottomBar() {
         )}
       </div>
 
-      {/* Track info — the flexible region; everything after it is fixed */}
-      <div className="min-w-0 flex-1 mr-2">
+      {/* Track info — click opens Now Playing */}
+      <div
+        data-testid="bottombar-trackinfo"
+        className={`min-w-0 flex-1 mr-2 ${track ? 'cursor-pointer group/info' : ''}`}
+        onClick={() => track && usePlayerStore.getState().setCurrentView('nowPlaying')}
+        title={track ? 'Open Now Playing' : undefined}
+      >
         {track ? (
           <>
-            <div className="text-sm font-medium truncate">{trackDisplayTitle(track)}</div>
+            <div className="text-sm font-medium truncate group-hover/info:text-neon-purple transition-colors">{trackDisplayTitle(track)}</div>
             <div className="text-xs text-gray-400 truncate">{trackDisplayArtist(track)}</div>
           </>
         ) : (

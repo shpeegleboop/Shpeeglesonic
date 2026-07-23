@@ -4,7 +4,7 @@ import { type Track } from '../../stores/playerStore';
 
 interface AlbumArtProps {
   track: Track;
-  size?: 'sm' | 'md' | 'lg';
+  size?: 'sm' | 'md' | 'lg' | 'xl';
 }
 
 export function AlbumArt({ track, size = 'md' }: AlbumArtProps) {
@@ -35,6 +35,7 @@ export function AlbumArt({ track, size = 'md' }: AlbumArtProps) {
     sm: 'w-10 h-10',
     md: 'w-48 h-48',
     lg: 'w-72 h-72',
+    xl: 'w-[min(85vmin,56rem)] h-[min(85vmin,56rem)]',
   };
 
   return (
