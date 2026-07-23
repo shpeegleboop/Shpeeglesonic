@@ -117,54 +117,6 @@ export function VisualizerView() {
           </div>
         </section>
 
-        {mode === 'rotator' && (
-          <section className="glass-panel p-3 space-y-3">
-            <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Rotating Spiral</h3>
-            {(
-              [
-                ['spiralShockwaves', 'Bass shockwaves', 'Kicks send ripples travelling outward through the arms'],
-                ['spiralSpectrumArms', 'Spectrum-woven arms', 'Arms bend with the live spectrum — bass inside, highs at the tips'],
-                ['spiralGroovePump', 'Groove-locked spin', 'Rotation slams on the beat and eases off between'],
-                ['spiralLivingDynamics', 'Living dynamics', 'Quiet = ghostly trails & fewer layers; drops bloom extra layers'],
-              ] as const
-            ).map(([key, label, hint]) => (
-              <div key={key}>
-                <label className="flex items-start gap-2 cursor-pointer group">
-                  <input
-                    type="checkbox"
-                    checked={settings[key]}
-                    onChange={(e) => update({ [key]: e.target.checked })}
-                    className="mt-0.5 accent-neon-purple"
-                  />
-                  <span>
-                    <span className="block text-xs text-gray-300 group-hover:text-white transition-colors">{label}</span>
-                    <span className="text-[11px] text-gray-600">{hint}</span>
-                  </span>
-                </label>
-                {key === 'spiralSpectrumArms' && settings.spiralSpectrumArms && (
-                  <div className="mt-1.5 ml-6">
-                    <div className="flex justify-between text-xs mb-1">
-                      <span className="text-gray-400">Strength</span>
-                      <span className="font-mono text-neon-purple">
-                        {Math.round((settings.spiralSpectrumStrength ?? 0.5) * 100)}%
-                      </span>
-                    </div>
-                    <input
-                      type="range"
-                      min={0}
-                      max={1}
-                      step={0.05}
-                      value={settings.spiralSpectrumStrength ?? 0.5}
-                      onChange={(e) => update({ spiralSpectrumStrength: parseFloat(e.target.value) })}
-                      className="w-full"
-                    />
-                  </div>
-                )}
-              </div>
-            ))}
-          </section>
-        )}
-
         {mode === 'mandelbrot' && (
           <section className="glass-panel p-3 space-y-3">
             <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Mandelbrot Colors</h3>

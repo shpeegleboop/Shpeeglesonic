@@ -70,16 +70,8 @@ export function RotatingSpiral({ fftRef, lastUpdateRef, width, height }: Rotatin
   const sensitivity = usePlayerStore((s) => s.visualizerSettings.sensitivity);
   const speed = usePlayerStore((s) => s.visualizerSettings.speed);
   const quality = usePlayerStore((s) => s.visualizerSettings.quality);
-  const shockwaves = usePlayerStore((s) => s.visualizerSettings.spiralShockwaves);
-  const spectrumArms = usePlayerStore((s) => s.visualizerSettings.spiralSpectrumArms);
-  const spectrumStrength = usePlayerStore((s) => s.visualizerSettings.spiralSpectrumStrength ?? 0.5);
-  const groovePump = usePlayerStore((s) => s.visualizerSettings.spiralGroovePump);
-  const livingDynamics = usePlayerStore((s) => s.visualizerSettings.spiralLivingDynamics);
   const wavesRef = useRef<number[]>([]); // birth timestamps of active shockwaves
-  const lastBeatRef = useRef(0);
-  const layerVisRef = useRef<number[]>([]); // per-layer visibility (living dynamics)
   const specSmoothRef = useRef<number[]>([]); // temporally smoothed spectrum buckets
-  const energySmoothRef = useRef(0);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -152,39 +144,34 @@ export function RotatingSpiral({ fftRef, lastUpdateRef, width, height }: Rotatin
       const tempo = tempoRef.current;
       if (beat.onset.bass || beat.onset.subBass) {
         tempo.onOnset(now);
-        lastBeatRef.current = now;
-        if (shockwaves) {
-          wavesRef.current.push(now);
-          if (wavesRef.current.length > 5) wavesRef.current.shift();
-        }
+        wavesRef.current.push(now);
+        if (wavesRef.current.length > 5) wavesRef.current.shift();
       }
 
-      // Shockwaves: each entry is a progress fraction (0 at center, 1 at edge)
+      // Bass shockwaves: each entry is a progress fraction (0 center, 1 edge)
       const WAVE_MS = 900;
       wavesRef.current = wavesRef.current.filter((t0) => (now - t0) / WAVE_MS < 1.15);
-      const waves = shockwaves ? wavesRef.current.map((t0) => (now - t0) / WAVE_MS) : [];
+      const waves = wavesRef.current.map((t0) => (now - t0) / WAVE_MS);
       const waveSigma = maxR * 0.04;
       const waveAmp = maxR * 0.022;
 
       // Spectrum-woven arms: bucket the FFT once per frame; arm points sample
       // it by radius fraction (low freqs inner, highs at the tips)
-      let spec: number[] | null = null;
-      if (spectrumArms && spectrumStrength > 0) {
-        const BUCKETS = 48;
-        const sm = specSmoothRef.current;
-        const usable = Math.floor(data.bins.length * 0.7);
-        for (let b = 0; b < BUCKETS; b++) {
-          const start = Math.floor(Math.pow(b / BUCKETS, 1.7) * usable);
-          const end = Math.max(start + 1, Math.floor(Math.pow((b + 1) / BUCKETS, 1.7) * usable));
-          let s = 0;
-          for (let i = start; i < end; i++) s += data.bins[i] || 0;
-          const raw = (s / (end - start)) * sensitivity;
-          // Soft-clip to 0..1 so loud bins can't fling arms off-canvas, then
-          // smooth over time so the weave flows instead of jittering
-          const v = raw / (1 + raw);
-          sm[b] = lerp(sm[b] ?? 0, v, kdt(0.3));
-        }
-        spec = sm;
+      // Spectrum-woven arms (always on, full strength): bucket the FFT once
+      // per frame; arm points sample it by radius fraction.
+      const BUCKETS = 48;
+      const spec = specSmoothRef.current;
+      const usable = Math.floor(data.bins.length * 0.7);
+      for (let b = 0; b < BUCKETS; b++) {
+        const start = Math.floor(Math.pow(b / BUCKETS, 1.7) * usable);
+        const end = Math.max(start + 1, Math.floor(Math.pow((b + 1) / BUCKETS, 1.7) * usable));
+        let s = 0;
+        for (let i = start; i < end; i++) s += data.bins[i] || 0;
+        const raw = (s / (end - start)) * sensitivity;
+        // Soft-clip to 0..1 so loud bins can't fling arms off-canvas, then
+        // smooth over time so the weave flows instead of jittering
+        const v = raw / (1 + raw);
+        spec[b] = lerp(spec[b] ?? 0, v, kdt(0.3));
       }
 
       // Every 4 beats, one layer morphs its shape; faster tempo = more often in wall time
@@ -202,49 +189,25 @@ export function RotatingSpiral({ fftRef, lastUpdateRef, width, height }: Rotatin
       const dt = 0.016 * speed * dtN;
       const bassPulse = beat.pulse.subBass * 0.5 + beat.pulse.bass * 0.5;
 
-      // Living dynamics: overall energy drives trail persistence and how many
-      // layers are awake — quiet passages go ghostly, drops bloom extra layers
-      const overall = Math.min(1, (beat.energy.bass + beat.energy.mids + beat.energy.highs) / 3);
-      energySmoothRef.current = lerp(energySmoothRef.current, overall, kdt(0.05));
-      const eLevel = energySmoothRef.current;
-
-      // Hypnotic trails (energy-modulated fade when living dynamics is on),
-      // normalized so trail length is the same at any frame rate
-      const fadeBase = livingDynamics ? 0.03 + eLevel * 0.15 : 0.09;
-      ctx.fillStyle = `rgba(10, 10, 20, ${1 - Math.pow(1 - fadeBase, dtN)})`;
+      // Hypnotic trails, normalized so trail length is the same at any frame rate
+      ctx.fillStyle = `rgba(10, 10, 20, ${1 - Math.pow(1 - 0.09, dtN)})`;
       ctx.fillRect(0, 0, width, height);
-
-      // Groove pump: spin slams right after each beat and eases off
-      const pump = groovePump ? 1 + 2.2 * Math.exp(-(now - lastBeatRef.current) / 110) : 1;
 
       const hueBase = (now * 0.008) % 360;
       const layers = layersRef.current!;
 
-      // Wake order keeps the outermost + innermost layers first so quiet
-      // passages get sparser, never smaller — full-screen reach is preserved.
-      const AWAKE_PRIORITY = [4, 0, 2, 1, 3];
-      const awakeCount = livingDynamics ? 2 + Math.round(eLevel * (layers.length - 2)) : layers.length;
-      const centerSwell = livingDynamics ? beat.pulse.subBass * maxR * 0.012 : 0;
-
-      for (let li = 0; li < layers.length; li++) {
-        const layer = layers[li];
-        // Layers fade in/out smoothly as the song's energy changes
-        const visTarget = AWAKE_PRIORITY.indexOf(li) < awakeCount ? 1 : 0;
-        layerVisRef.current[li] = lerp(layerVisRef.current[li] ?? 1, visTarget, kdt(0.08));
-        const vis = layerVisRef.current[li];
-        if (vis < 0.02) continue;
-
+      for (const layer of layers) {
         // Smooth morphing
         layer.symmetry = lerp(layer.symmetry, layer.symmetryTarget, kdt(0.02));
         layer.twist = lerp(layer.twist, layer.twistTarget, kdt(0.02));
-        layer.phase += dt * bpmRate * layer.speedFactor * layer.direction * (1 + bassPulse * 0.8) * pump;
+        layer.phase += dt * bpmRate * layer.speedFactor * layer.direction * (1 + bassPulse * 0.8);
 
         const energy = Math.min(1.5, beat.energy[layer.band]);
         const pulse = Math.min(1.5, beat.pulse[layer.band]);
         const arms = Math.round(layer.symmetry);
         const hue = (hueBase + layer.hueOffset) % 360;
         const [r, g, b] = hslToRgb(hue, 82 + pulse * 18, Math.min(90, 50 + energy * 22 + pulse * 20));
-        const alpha = (0.3 + energy * 0.4 + pulse * 0.3) * vis;
+        const alpha = 0.3 + energy * 0.4 + pulse * 0.3;
         const lineWidth = 1.2 + energy * 1.8 + pulse * 3;
         const breathe = 1 + energy * 0.12 + bassPulse * 0.15;
 
@@ -269,13 +232,13 @@ export function RotatingSpiral({ fftRef, lastUpdateRef, width, height }: Rotatin
               const theta = armOffset + phase + frac * layer.twist * dir;
               let rr = radiusOf(layer, frac) * breathe;
               // Spectrum weave: arms bulge with the live FFT along their length
-              // (inter-bucket lerp keeps the curve smooth, strength is the slider)
-              if (spec) {
-                const pos = frac * (spec.length - 1);
+              // (inter-bucket lerp keeps the curve smooth)
+              {
+                const pos = frac * (BUCKETS - 1);
                 const b0 = Math.floor(pos);
                 const t = pos - b0;
-                const v = spec[b0] * (1 - t) + (spec[Math.min(spec.length - 1, b0 + 1)] ?? 0) * t;
-                rr *= 1 + v * 0.25 * spectrumStrength * (0.4 + frac);
+                const v = (spec[b0] ?? 0) * (1 - t) + (spec[Math.min(BUCKETS - 1, b0 + 1)] ?? 0) * t;
+                rr *= 1 + v * 0.25 * (0.4 + frac);
               }
               // Center anchor: all radial displacement fades to zero at the
               // convergence point so beats never punch a hole in the middle
@@ -285,8 +248,6 @@ export function RotatingSpiral({ fftRef, lastUpdateRef, width, height }: Rotatin
                 const d = rr - waves[w] * maxR * 1.1;
                 rr += waveAmp * Math.exp(-(d * d) / (2 * waveSigma * waveSigma)) * (1 - waves[w] * 0.6) * anchor;
               }
-              // Sub-bass swells the inner region outward (but not the center itself)
-              if (centerSwell > 0) rr += centerSwell * (1 - frac) * anchor;
               const x = cx + Math.cos(theta) * rr;
               const y = cy + Math.sin(theta) * rr;
               if (i === 0) ctx.moveTo(x, y);
@@ -314,7 +275,7 @@ export function RotatingSpiral({ fftRef, lastUpdateRef, width, height }: Rotatin
 
     render();
     return () => cancelAnimationFrame(animRef.current);
-  }, [width, height, sensitivity, speed, quality, shockwaves, spectrumArms, spectrumStrength, groovePump, livingDynamics]);
+  }, [width, height, sensitivity, speed, quality]);
 
   return <canvas ref={canvasRef} width={width} height={height} className="block w-full h-full" />;
 }

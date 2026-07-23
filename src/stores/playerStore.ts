@@ -143,12 +143,6 @@ interface PlayerState {
     quality: 'low' | 'medium' | 'high';
     mandelbrotPalette: 'cosmic' | 'acid' | 'fireice' | 'electric';
     mandelbrotHue: number; // 0-360 shift applied to the palette
-    // Rotating Spiral effect toggles
-    spiralShockwaves: boolean;
-    spiralSpectrumArms: boolean;
-    spiralSpectrumStrength: number; // 0-1 — how hard the FFT bends the arms
-    spiralGroovePump: boolean;
-    spiralLivingDynamics: boolean;
   };
 
   // UI
@@ -216,19 +210,15 @@ export const usePlayerStore = create<PlayerState>()(
   visualizerMode: 'spectrogram',
   visualizerFullscreen: false,
   artZoomVisible: false,
+  // The golden config — tuned live on real music
   visualizerSettings: {
-    sensitivity: 1.0,
+    sensitivity: 3.0,
     speed: 1.0,
     colorMode: 'spectrum',
-    smoothing: 0.8,
-    quality: 'medium',
+    smoothing: 0.95,
+    quality: 'high',
     mandelbrotPalette: 'cosmic',
     mandelbrotHue: 0,
-    spiralShockwaves: true,
-    spiralSpectrumArms: true,
-    spiralSpectrumStrength: 0.5,
-    spiralGroovePump: true,
-    spiralLivingDynamics: true,
   },
 
   sidebarCollapsed: false,
