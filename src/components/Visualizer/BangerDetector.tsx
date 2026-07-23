@@ -229,6 +229,11 @@ export function BangerDetector({ fftRef, lastUpdateRef, width, height }: BangerD
       // The whole mandala dilates with the sub — bass you can see breathing
       const scenePump = 1 + subPressure * 0.12;
 
+      // Sub sections must CARRY the scene, not starve it: the intensity
+      // formula reads bass/mids/highs, which are quiet exactly when the sub
+      // dominates — so pressure counts as intensity in its own right.
+      const drive = Math.max(intensity, subPressure * 0.9);
+
       // 150ms refractory: sustained bass swells can re-trigger onsets within
       // a few frames — without the gate that means double slams and jitter.
       if ((beat.onset.bass || beat.onset.subBass) && now - lastHitTsRef.current > 150) {
@@ -279,7 +284,7 @@ export function BangerDetector({ fftRef, lastUpdateRef, width, height }: BangerD
         const layers = layersRef.current!;
         const l = layers[Math.floor(Math.random() * layers.length)];
         // Arm count scales with intensity: chill = 3-4 arms, banging = up to 8
-        l.symmetryTarget = 3 + Math.floor(Math.random() * (1 + Math.round(intensity * 5)));
+        l.symmetryTarget = 3 + Math.floor(Math.random() * (1 + Math.round(drive * 5)));
         l.twistTarget = Math.PI * (1 + Math.random() * 3.5);
         if (Math.random() < 0.4) l.curve = CURVES[Math.floor(Math.random() * CURVES.length)];
       }
@@ -287,12 +292,14 @@ export function BangerDetector({ fftRef, lastUpdateRef, width, height }: BangerD
       // Tempo-locked base motion scaled by intensity: silence crawls at ~15%,
       // full-tilt music runs the whole rate. Momentum (spinVel) does the slams.
       const bpmRate = tempo.bpm / 60;
-      const dt = 0.016 * dtN * (0.45 + 0.55 * speed) * (0.15 + 0.85 * intensity);
+      // Sub pressure spins the scene HARDER than any normal section — the
+      // violet state is the fastest thing this mode does.
+      const dt = 0.016 * dtN * (0.45 + 0.55 * speed) * (0.15 + 0.85 * drive) * (1 + subPressure * 0.9);
       const bassPulse = beat.pulse.subBass * 0.5 + beat.pulse.bass * 0.5;
 
       // How many layers are awake right now (2 at idle, all 7 at full tilt)
       const layerPool = layersRef.current!;
-      const awakeCount = 2 + Math.round(intensity * (layerPool.length - 2));
+      const awakeCount = 2 + Math.round(drive * (layerPool.length - 2));
 
       ctx.fillStyle = `rgba(10, 10, 20, ${1 - Math.pow(1 - 0.09, dtN)})`;
       ctx.fillRect(0, 0, width, height);
@@ -335,7 +342,7 @@ export function BangerDetector({ fftRef, lastUpdateRef, width, height }: BangerD
         // Bass drives thickness; intensity sets the overall weight so the
         // idle state draws thin threads and drops draw heavy ropes; sub
         // pressure fattens everything further
-        const lineWidth = (0.5 + 0.5 * intensity) * (1.2 + beat.energy.bass * 2.4 + pulse * 2.6) * (1 + subPressure * 0.5);
+        const lineWidth = (0.5 + 0.5 * drive) * (1.2 + beat.energy.bass * 2.4 + pulse * 2.6) * (1 + subPressure * 0.5);
         const breathe = (1 + energy * 0.12 + bassPulse * 0.15) * scenePump;
 
         ctx.lineWidth = lineWidth;
