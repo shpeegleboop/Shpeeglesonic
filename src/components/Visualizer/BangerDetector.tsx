@@ -112,6 +112,8 @@ export function BangerDetector({ fftRef, lastUpdateRef, width, height }: BangerD
   const layersRef = useRef<SpiralLayer[] | null>(null);
   const lastMorphBeatRef = useRef(0);
   const spinVelRef = useRef(1); // angular velocity multiplier; friction pulls it to 1
+  const pendingTorqueRef = useRef(0); // impulse pool, transferred into spin over ~100ms
+  const lastHitTsRef = useRef(0); // refractory gate against onset re-triggers
   const sensitivity = usePlayerStore((s) => s.visualizerSettings.sensitivity);
   const speed = usePlayerStore((s) => s.visualizerSettings.speed);
   const quality = usePlayerStore((s) => s.visualizerSettings.quality);
@@ -182,17 +184,28 @@ export function BangerDetector({ fftRef, lastUpdateRef, width, height }: BangerD
       const crest = crestRef.current;
       crest.update(now, beat.energy.bass * 0.6 + beat.energy.subBass * 0.4);
 
-      if (beat.onset.bass || beat.onset.subBass) {
+      // 150ms refractory: sustained bass swells can re-trigger onsets within
+      // a few frames — without the gate that means double slams and jitter.
+      if ((beat.onset.bass || beat.onset.subBass) && now - lastHitTsRef.current > 150) {
+        lastHitTsRef.current = now;
         tempo.onOnset(now);
-        // Torque: the hit slams the spin, scaled by hit energy, the song's
-        // crest gain, and the drama knob (speed slider).
-        const hit = Math.min(1.5, beat.pulse.bass + beat.pulse.subBass);
-        spinVelRef.current = Math.min(5, spinVelRef.current + hit * 1.6 * crest.gain() * (0.3 + 0.7 * speed));
+        // Hit strength from the pre-saturation flux ratio (pulse pins at 1.0
+        // at high sensitivity, which made every beat read as a max slam).
+        const fr = beat.fluxRatio.bass + beat.fluxRatio.subBass;
+        const hit = Math.tanh(fr / 4) * 1.5;
+        // Torque: pooled, not applied instantly — an instantaneous velocity
+        // jump reads as a dropped frame. The pool feeds into spin over ~100ms
+        // so a slam is a violent surge, never a teleport.
+        pendingTorqueRef.current += hit * 1.6 * crest.gain() * (0.3 + 0.7 * speed);
         wavesRef.current.push({ t0: now, e: hit });
         if (wavesRef.current.length > 5) wavesRef.current.shift();
       }
 
-      // Friction: spin always relaxes back toward the tempo-locked base rate
+      // Transfer pooled torque into spin smoothly, then apply friction toward
+      // the tempo-locked base rate.
+      const transfer = pendingTorqueRef.current * kdt(0.25);
+      pendingTorqueRef.current -= transfer;
+      spinVelRef.current = Math.min(5, spinVelRef.current + transfer);
       spinVelRef.current = 1 + (spinVelRef.current - 1) * Math.pow(0.94, dtN);
       const spinVel = spinVelRef.current;
       // How hard we're currently surging (0 = cruising) — drives extra glow

@@ -113,6 +113,11 @@ export class BeatDetector {
   // Onset flags — true on the frame a beat is detected
   onset = { subBass: false, bass: false, mids: false, highs: false, air: false, any: false };
 
+  // Flux-to-threshold ratio at the last onset per band (~1 = barely a beat,
+  // 4+ = monster hit). Unlike pulse it doesn't saturate at 1, so it grades
+  // hit strength even at high sensitivity.
+  fluxRatio = { subBass: 0, bass: 0, mids: 0, highs: 0, air: 0 };
+
   // Configurable thresholds
   private onsetThreshold = 1.4;  // current must be this * average to trigger
   private pulseDecay = 0.85;     // how fast pulse decays (lower = faster)
@@ -162,6 +167,7 @@ export class BeatDetector {
       if (flux > threshold * 0.5 && raw[key] > threshold) {
         this.onset[key] = true;
         this.onset.any = true;
+        this.fluxRatio[key] = flux / threshold;
         // Spike pulse to flux intensity (clamped)
         this.pulse[key] = Math.min(1.0, flux * 4 + 0.3);
       } else {
