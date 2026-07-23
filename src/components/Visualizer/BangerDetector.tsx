@@ -121,6 +121,9 @@ export function BangerDetector({ fftRef, lastUpdateRef, width, height }: BangerD
   const specSmoothRef = useRef<number[]>([]);
   const intensityRef = useRef(0); // smoothed song dynamics 0..1 (fast attack, slow release)
   const layerVisRef = useRef<number[]>([]); // per-layer spawn level 0..1
+  const subEnvRef = useRef(0); // sub-40Hz envelope (pumps with the wobble)
+  const subMaxRef = useRef(0.02); // slow auto-gain reference for the sub envelope
+  const subPressureRef = useRef(0); // gated, normalized sub pressure 0..1
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -191,16 +194,40 @@ export function BangerDetector({ fftRef, lastUpdateRef, width, height }: BangerD
       const crest = crestRef.current;
       crest.update(now, beat.energy.bass * 0.6 + beat.energy.subBass * 0.4);
 
-      // Intensity: how alive is the music right now? Fast attack so drops hit
-      // immediately, slow release so breakdowns wind down gracefully.
-      // Silence decays to 0 → the idle state: slow, sparse, thin.
-      const intensityTarget = Math.min(1, (beat.energy.bass * 0.5 + beat.energy.mids * 0.3 + beat.energy.highs * 0.2) * 1.3);
+      // Intensity: how alive is the music right now? Crest-gated so merely
+      // LOUD music can't max the scene — only dynamically spiky material
+      // (bangers) unlocks the top of the range. Fast attack, slow release;
+      // silence decays to 0 → the idle state: slow, sparse, thin.
+      const loudness = Math.min(1, (beat.energy.bass * 0.5 + beat.energy.mids * 0.3 + beat.energy.highs * 0.2) * 1.3);
+      const crestFactor = 0.3 + 0.7 * Math.min(1, crest.gain());
+      const intensityTarget = loudness * crestFactor;
       intensityRef.current = lerp(
         intensityRef.current,
         intensityTarget,
         intensityTarget > intensityRef.current ? kdt(0.15) : kdt(0.015)
       );
       const intensity = intensityRef.current;
+
+      // ── Sub pressure: the sub-40Hz payoff ─────────────────────────────
+      // Bin 1 = 21.5-43Hz at this FFT (bin 2 = upper sub, weighted lightly).
+      // Envelope pumps with the actual wobble; a slow auto-gain normalizes
+      // per-track levels; the dominance gate demands the sub OVERPOWER the
+      // rest of the spectrum — chill music with ordinary low end stays at 0.
+      const subRaw = ((data.bins[1] || 0) + (data.bins[2] || 0) * 0.4) * sensitivity;
+      subEnvRef.current = lerp(subEnvRef.current, subRaw, subRaw > subEnvRef.current ? kdt(0.5) : kdt(0.12));
+      subMaxRef.current = Math.max(subEnvRef.current, subMaxRef.current * Math.pow(0.9995, dtN), 0.02);
+      const subNorm = subEnvRef.current / subMaxRef.current;
+      const totalOther = beat.energy.bass + beat.energy.mids + beat.energy.highs + 0.001;
+      const dominance = subEnvRef.current / (subEnvRef.current + totalOther);
+      const pressureTarget = subNorm * Math.min(1, Math.max(0, (dominance - 0.15) / 0.25));
+      subPressureRef.current = lerp(
+        subPressureRef.current,
+        pressureTarget,
+        pressureTarget > subPressureRef.current ? kdt(0.5) : kdt(0.1)
+      );
+      const subPressure = subPressureRef.current;
+      // The whole mandala dilates with the sub — bass you can see breathing
+      const scenePump = 1 + subPressure * 0.12;
 
       // 150ms refractory: sustained bass swells can re-trigger onsets within
       // a few frames — without the gate that means double slams and jitter.
@@ -270,7 +297,21 @@ export function BangerDetector({ fftRef, lastUpdateRef, width, height }: BangerD
       ctx.fillStyle = `rgba(10, 10, 20, ${1 - Math.pow(1 - 0.09, dtN)})`;
       ctx.fillRect(0, 0, width, height);
 
-      const hueBase = (now * 0.008) % 360;
+      // Violet pressure flood: a center-origin glow that breathes with the
+      // sub — the room filling with bass. Behind the arms, additive.
+      if (subPressure > 0.03) {
+        const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, maxR * (0.5 + subPressure * 0.3));
+        g.addColorStop(0, `rgba(150, 60, 255, ${0.22 * subPressure})`);
+        g.addColorStop(0.6, `rgba(90, 20, 200, ${0.1 * subPressure})`);
+        g.addColorStop(1, 'rgba(0, 0, 0, 0)');
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.fillStyle = g;
+        ctx.fillRect(0, 0, width, height);
+        ctx.globalCompositeOperation = 'source-over';
+      }
+
+      // Sub pressure drags the whole palette toward deep violet
+      const hueBase = (((now * 0.008) % 360) + 360 - subPressure * 45) % 360;
       const layers = layerPool;
 
       for (let li = 0; li < layers.length; li++) {
@@ -292,9 +333,10 @@ export function BangerDetector({ fftRef, lastUpdateRef, width, height }: BangerD
         const [r, g, b] = hslToRgb(hue, 82 + pulse * 18, Math.min(92, 50 + energy * 22 + pulse * 20 + surge * 10));
         const alpha = (0.3 + energy * 0.4 + pulse * 0.3 + surge * 0.15) * vis;
         // Bass drives thickness; intensity sets the overall weight so the
-        // idle state draws thin threads and drops draw heavy ropes
-        const lineWidth = (0.5 + 0.5 * intensity) * (1.2 + beat.energy.bass * 2.4 + pulse * 2.6);
-        const breathe = 1 + energy * 0.12 + bassPulse * 0.15;
+        // idle state draws thin threads and drops draw heavy ropes; sub
+        // pressure fattens everything further
+        const lineWidth = (0.5 + 0.5 * intensity) * (1.2 + beat.energy.bass * 2.4 + pulse * 2.6) * (1 + subPressure * 0.5);
+        const breathe = (1 + energy * 0.12 + bassPulse * 0.15) * scenePump;
 
         ctx.lineWidth = lineWidth;
         ctx.lineCap = 'round';
