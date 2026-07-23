@@ -95,7 +95,8 @@ export type VisualizerType =
   | 'buddhabrot'
   | 'paint'
   | 'notes'
-  | 'combined';
+  | 'combined'
+  | 'banger';
 
 export const VISUALIZER_MODES: { id: VisualizerType; label: string }[] = [
   { id: 'spectrogram', label: 'Bars' },
@@ -106,6 +107,7 @@ export const VISUALIZER_MODES: { id: VisualizerType; label: string }[] = [
   { id: 'paint', label: 'Paint Splash' },
   { id: 'notes', label: 'Music Notes' },
   { id: 'combined', label: 'Combined' },
+  { id: 'banger', label: 'Banger Detector' },
 ];
 
 interface PlayerState {

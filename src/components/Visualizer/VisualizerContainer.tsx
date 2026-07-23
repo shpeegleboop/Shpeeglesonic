@@ -9,6 +9,7 @@ import { Buddhabrot } from './Buddhabrot';
 import { PaintSplash } from './PaintSplash';
 import { MusicNotes } from './MusicNotes';
 import { CombinedVisualizer } from './CombinedVisualizer';
+import { BangerDetector } from './BangerDetector';
 import { VisualizerQuickSettings } from './VisualizerQuickSettings';
 import { VISUALIZER_MODES } from '../../stores/playerStore';
 
@@ -70,6 +71,8 @@ export function VisualizerContainer({ inline }: VisualizerContainerProps) {
         return <MusicNotes {...props} />;
       case 'combined':
         return <CombinedVisualizer {...props} />;
+      case 'banger':
+        return <BangerDetector {...props} />;
       default:
         return <Spectrogram {...props} />;
     }
