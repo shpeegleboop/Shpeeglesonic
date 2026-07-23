@@ -119,6 +119,8 @@ export function BangerDetector({ fftRef, lastUpdateRef, width, height }: BangerD
   const quality = usePlayerStore((s) => s.visualizerSettings.quality);
   const wavesRef = useRef<Shockwave[]>([]);
   const specSmoothRef = useRef<number[]>([]);
+  const intensityRef = useRef(0); // smoothed song dynamics 0..1 (fast attack, slow release)
+  const layerVisRef = useRef<number[]>([]); // per-layer spawn level 0..1
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -133,17 +135,20 @@ export function BangerDetector({ fftRef, lastUpdateRef, width, height }: BangerD
     const maxR = Math.hypot(cx, cy) * 0.95;
 
     if (!layersRef.current) {
-      const bands: SpiralLayer['band'][] = ['bass', 'mids', 'highs', 'air', 'mids'];
+      // 7-layer pool; intensity decides how many are awake (2 at idle).
+      // Symmetry is inherent: every layer renders with its counter-rotating
+      // mirror twin, so a spawned spiral always arrives as a symmetric pair.
+      const bands: SpiralLayer['band'][] = ['bass', 'mids', 'highs', 'air', 'mids', 'bass', 'highs'];
       layersRef.current = bands.map((band, i) => ({
         direction: (i % 2 === 0 ? 1 : -1) as 1 | -1,
-        symmetry: 3 + i,
-        symmetryTarget: 3 + i,
-        twist: Math.PI * (1.5 + i * 0.6),
-        twistTarget: Math.PI * (1.5 + i * 0.6),
+        symmetry: 3,
+        symmetryTarget: 3,
+        twist: Math.PI * (1.5 + i * 0.5),
+        twistTarget: Math.PI * (1.5 + i * 0.5),
         curve: CURVES[i % CURVES.length],
         rMin: 0,
         rMax: 0,
-        speedFactor: 0.6 + i * 0.28,
+        speedFactor: 0.6 + i * 0.22,
         hueOffset: i * 65,
         phase: (i * Math.PI) / 3,
         band,
@@ -151,8 +156,10 @@ export function BangerDetector({ fftRef, lastUpdateRef, width, height }: BangerD
     }
     layersRef.current.forEach((l, i) => {
       l.rMin = 0;
-      l.rMax = maxR * (0.5 + i * 0.14);
+      l.rMax = maxR * (0.45 + i * 0.1);
     });
+    // Wake order keeps outermost + innermost first: idle is sparse, never small
+    const WAKE_PRIORITY = [6, 0, 3, 1, 5, 2, 4];
 
     const radiusOf = (layer: SpiralLayer, frac: number): number => {
       const span = layer.rMax - layer.rMin;
@@ -183,6 +190,17 @@ export function BangerDetector({ fftRef, lastUpdateRef, width, height }: BangerD
       const tempo = tempoRef.current;
       const crest = crestRef.current;
       crest.update(now, beat.energy.bass * 0.6 + beat.energy.subBass * 0.4);
+
+      // Intensity: how alive is the music right now? Fast attack so drops hit
+      // immediately, slow release so breakdowns wind down gracefully.
+      // Silence decays to 0 → the idle state: slow, sparse, thin.
+      const intensityTarget = Math.min(1, (beat.energy.bass * 0.5 + beat.energy.mids * 0.3 + beat.energy.highs * 0.2) * 1.3);
+      intensityRef.current = lerp(
+        intensityRef.current,
+        intensityTarget,
+        intensityTarget > intensityRef.current ? kdt(0.15) : kdt(0.015)
+      );
+      const intensity = intensityRef.current;
 
       // 150ms refractory: sustained bass swells can re-trigger onsets within
       // a few frames — without the gate that means double slams and jitter.
@@ -233,24 +251,36 @@ export function BangerDetector({ fftRef, lastUpdateRef, width, height }: BangerD
         lastMorphBeatRef.current = tempo.beatCount;
         const layers = layersRef.current!;
         const l = layers[Math.floor(Math.random() * layers.length)];
-        l.symmetryTarget = 3 + Math.floor(Math.random() * 6);
+        // Arm count scales with intensity: chill = 3-4 arms, banging = up to 8
+        l.symmetryTarget = 3 + Math.floor(Math.random() * (1 + Math.round(intensity * 5)));
         l.twistTarget = Math.PI * (1 + Math.random() * 3.5);
         if (Math.random() < 0.4) l.curve = CURVES[Math.floor(Math.random() * CURVES.length)];
       }
 
-      // Tempo-locked base motion: degrees per beat, not per second. The drama
-      // knob shapes the base mildly; momentum (spinVel) does the slamming.
+      // Tempo-locked base motion scaled by intensity: silence crawls at ~15%,
+      // full-tilt music runs the whole rate. Momentum (spinVel) does the slams.
       const bpmRate = tempo.bpm / 60;
-      const dt = 0.016 * dtN * (0.45 + 0.55 * speed);
+      const dt = 0.016 * dtN * (0.45 + 0.55 * speed) * (0.15 + 0.85 * intensity);
       const bassPulse = beat.pulse.subBass * 0.5 + beat.pulse.bass * 0.5;
+
+      // How many layers are awake right now (2 at idle, all 7 at full tilt)
+      const layerPool = layersRef.current!;
+      const awakeCount = 2 + Math.round(intensity * (layerPool.length - 2));
 
       ctx.fillStyle = `rgba(10, 10, 20, ${1 - Math.pow(1 - 0.09, dtN)})`;
       ctx.fillRect(0, 0, width, height);
 
       const hueBase = (now * 0.008) % 360;
-      const layers = layersRef.current!;
+      const layers = layerPool;
 
-      for (const layer of layers) {
+      for (let li = 0; li < layers.length; li++) {
+        const layer = layers[li];
+        // Spawn/despawn smoothly by intensity (mirror twin comes along free)
+        const visTarget = WAKE_PRIORITY.indexOf(li) < awakeCount ? 1 : 0;
+        layerVisRef.current[li] = lerp(layerVisRef.current[li] ?? (li < 2 ? 1 : 0), visTarget, kdt(0.05));
+        const vis = layerVisRef.current[li];
+        if (vis < 0.02) continue;
+
         layer.symmetry = lerp(layer.symmetry, layer.symmetryTarget, kdt(0.02));
         layer.twist = lerp(layer.twist, layer.twistTarget, kdt(0.02));
         layer.phase += dt * bpmRate * layer.speedFactor * layer.direction * spinVel;
@@ -260,8 +290,10 @@ export function BangerDetector({ fftRef, lastUpdateRef, width, height }: BangerD
         const arms = Math.round(layer.symmetry);
         const hue = (hueBase + layer.hueOffset) % 360;
         const [r, g, b] = hslToRgb(hue, 82 + pulse * 18, Math.min(92, 50 + energy * 22 + pulse * 20 + surge * 10));
-        const alpha = 0.3 + energy * 0.4 + pulse * 0.3 + surge * 0.15;
-        const lineWidth = 1.2 + energy * 1.8 + pulse * 3;
+        const alpha = (0.3 + energy * 0.4 + pulse * 0.3 + surge * 0.15) * vis;
+        // Bass drives thickness; intensity sets the overall weight so the
+        // idle state draws thin threads and drops draw heavy ropes
+        const lineWidth = (0.5 + 0.5 * intensity) * (1.2 + beat.energy.bass * 2.4 + pulse * 2.6);
         const breathe = 1 + energy * 0.12 + bassPulse * 0.15;
 
         ctx.lineWidth = lineWidth;
