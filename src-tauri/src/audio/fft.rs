@@ -17,21 +17,26 @@ struct FftPayload {
     bins: Vec<u8>,
     rms: f32,
     time: f64,
-    /// Left/right time-domain waveforms, quantized to i8 (-127..127)
-    wave_l: Vec<i8>,
-    wave_r: Vec<i8>,
+    /// Left/right waveforms as base64 of i8 samples — a single string parses
+    /// far cheaper on the webview main thread than 512 JSON array elements.
+    wave_l: String,
+    wave_r: String,
 }
 
-/// Downsample the last FFT_SIZE samples of a channel to WAVE_POINTS i8 values.
-fn quantize_wave(acc: &[f32]) -> Vec<i8> {
-    if acc.len() < FFT_SIZE {
-        return vec![0i8; WAVE_POINTS];
-    }
-    let window = &acc[acc.len() - FFT_SIZE..];
-    let step = FFT_SIZE / WAVE_POINTS;
-    (0..WAVE_POINTS)
-        .map(|i| (window[i * step].clamp(-1.0, 1.0) * 127.0) as i8)
-        .collect()
+/// Downsample the last FFT_SIZE samples of a channel to WAVE_POINTS i8 values,
+/// base64-encoded for cheap IPC.
+fn quantize_wave(acc: &[f32]) -> String {
+    use base64::Engine;
+    let bytes: Vec<u8> = if acc.len() < FFT_SIZE {
+        vec![0u8; WAVE_POINTS]
+    } else {
+        let window = &acc[acc.len() - FFT_SIZE..];
+        let step = FFT_SIZE / WAVE_POINTS;
+        (0..WAVE_POINTS)
+            .map(|i| (window[i * step].clamp(-1.0, 1.0) * 127.0) as i8 as u8)
+            .collect()
+    };
+    base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
 /// Spawn the FFT analysis thread. Returns the sender for audio data.
@@ -131,8 +136,8 @@ fn fft_loop(
                 bins: vec![0u8; OUTPUT_BINS],
                 rms: 0.0,
                 time: 0.0,
-                wave_l: vec![0i8; WAVE_POINTS],
-                wave_r: vec![0i8; WAVE_POINTS],
+                wave_l: quantize_wave(&[]),
+                wave_r: quantize_wave(&[]),
             };
             let _ = app_handle.emit("fft-data", &payload);
             std::thread::sleep(std::time::Duration::from_millis(100));

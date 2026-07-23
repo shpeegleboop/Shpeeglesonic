@@ -32,7 +32,7 @@ audioadapter-buffers = "2.0.0"
 rusqlite = { version = "0.38.0", features = ["bundled"] }
 lofty = "0.23.2"
 rustfft = "6.4.1"
-base64 = "0.22.1"
+base64 = "0.22"
 reqwest = { version = "0.13.2", features = ["json"] }
 tokio = { version = "1.50.0", features = ["full"] }
 

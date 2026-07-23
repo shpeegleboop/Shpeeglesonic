@@ -14,6 +14,18 @@ interface StereoScopeProps {
  * Bottom 45%: frequency-vs-time heatmap scrolling right-to-left, log-scaled
  * so bass detail gets room.
  */
+/** Decode a base64 i8 waveform. Only runs while this mode is mounted. */
+function decodeWave(b64: string | undefined): number[] {
+  if (!b64) return [];
+  const bin = atob(b64);
+  const out: number[] = new Array(bin.length);
+  for (let i = 0; i < bin.length; i++) {
+    const v = bin.charCodeAt(i);
+    out[i] = v > 127 ? v - 256 : v;
+  }
+  return out;
+}
+
 export function StereoScope({ fftRef, lastUpdateRef, width, height }: StereoScopeProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animRef = useRef<number>(0);
@@ -84,8 +96,8 @@ export function StereoScope({ fftRef, lastUpdateRef, width, height }: StereoScop
 
       const data = fftRef.current;
       const stale = now - (lastUpdateRef.current ?? 0) > 250;
-      const waveL = !stale && data?.wave_l ? data.wave_l : [];
-      const waveR = !stale && data?.wave_r ? data.wave_r : [];
+      const waveL = !stale ? decodeWave(data?.wave_l) : [];
+      const waveR = !stale ? decodeWave(data?.wave_r) : [];
       const bins = !stale && data?.bins ? data.bins : [];
 
       // ── Scope area ──
