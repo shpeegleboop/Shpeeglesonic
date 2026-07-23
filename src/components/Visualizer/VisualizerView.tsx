@@ -174,7 +174,7 @@ export function VisualizerView() {
         </button>
 
         <p className="text-[11px] text-gray-600 px-1 leading-relaxed">
-          V cycles modes · 1–9 jump straight to one · Esc exits fullscreen. All settings save automatically.
+          V cycles modes · 1–9 and 0 jump straight to one · Esc exits fullscreen. All settings save automatically.
         </p>
       </div>
     </div>

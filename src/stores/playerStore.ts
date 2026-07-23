@@ -96,7 +96,8 @@ export type VisualizerType =
   | 'paint'
   | 'notes'
   | 'combined'
-  | 'banger';
+  | 'banger'
+  | 'scope';
 
 export const VISUALIZER_MODES: { id: VisualizerType; label: string }[] = [
   { id: 'spectrogram', label: 'Bars' },
@@ -108,6 +109,7 @@ export const VISUALIZER_MODES: { id: VisualizerType; label: string }[] = [
   { id: 'notes', label: 'Music Notes' },
   { id: 'combined', label: 'Combined' },
   { id: 'banger', label: 'Banger Detector' },
+  { id: 'scope', label: 'Stereo Scope' },
 ];
 
 interface PlayerState {

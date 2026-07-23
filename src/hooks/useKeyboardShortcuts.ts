@@ -90,9 +90,12 @@ export function useKeyboardShortcuts() {
         case '6':
         case '7':
         case '8':
-        case '9': {
+        case '9':
+        case '0': {
           if (!isMeta) {
-            const m = VISUALIZER_MODES[parseInt(e.key, 10) - 1];
+            // '0' selects the 10th mode
+            const idx = e.key === '0' ? 9 : parseInt(e.key, 10) - 1;
+            const m = VISUALIZER_MODES[idx];
             if (m) store.setVisualizerMode(m.id);
           }
           break;

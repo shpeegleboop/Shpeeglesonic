@@ -9,12 +9,29 @@ use super::engine::{STATE_PLAYING, STATE_STOPPED};
 
 const FFT_SIZE: usize = 2048;
 const OUTPUT_BINS: usize = 1024;
+/// Oscilloscope waveform points per channel (FFT window downsampled 4:1)
+const WAVE_POINTS: usize = 512;
 
 #[derive(Clone, serde::Serialize)]
 struct FftPayload {
     bins: Vec<u8>,
     rms: f32,
     time: f64,
+    /// Left/right time-domain waveforms, quantized to i8 (-127..127)
+    wave_l: Vec<i8>,
+    wave_r: Vec<i8>,
+}
+
+/// Downsample the last FFT_SIZE samples of a channel to WAVE_POINTS i8 values.
+fn quantize_wave(acc: &[f32]) -> Vec<i8> {
+    if acc.len() < FFT_SIZE {
+        return vec![0i8; WAVE_POINTS];
+    }
+    let window = &acc[acc.len() - FFT_SIZE..];
+    let step = FFT_SIZE / WAVE_POINTS;
+    (0..WAVE_POINTS)
+        .map(|i| (window[i * step].clamp(-1.0, 1.0) * 127.0) as i8)
+        .collect()
 }
 
 /// Spawn the FFT analysis thread. Returns the sender for audio data.
@@ -56,6 +73,9 @@ fn fft_loop(
     let fft = planner.plan_fft_forward(FFT_SIZE);
 
     let mut accumulator: Vec<f32> = Vec::with_capacity(FFT_SIZE * 2);
+    // Per-channel accumulators for the stereo oscilloscope (mono duplicates L)
+    let mut acc_l: Vec<f32> = Vec::with_capacity(FFT_SIZE * 2);
+    let mut acc_r: Vec<f32> = Vec::with_capacity(FFT_SIZE * 2);
     let mut smoothed_bins: Vec<f32> = vec![0.0; OUTPUT_BINS];
     let smoothing = 0.3f32;
 
@@ -78,14 +98,7 @@ fn fft_loop(
             match rx.try_recv() {
                 Ok(chunk) => {
                     got_data = true;
-                    let ch = device_channels as usize;
-                    for frame_start in (0..chunk.len()).step_by(ch) {
-                        let mut sum = 0.0f32;
-                        for c in 0..ch.min(chunk.len() - frame_start) {
-                            sum += chunk[frame_start + c];
-                        }
-                        accumulator.push(sum / ch as f32);
-                    }
+                    ingest(&chunk, device_channels, &mut accumulator, &mut acc_l, &mut acc_r);
                 }
                 Err(_) => break,
             }
@@ -94,14 +107,7 @@ fn fft_loop(
         if !got_data {
             match rx.recv_timeout(std::time::Duration::from_millis(4)) {
                 Ok(chunk) => {
-                    let ch = device_channels as usize;
-                    for frame_start in (0..chunk.len()).step_by(ch) {
-                        let mut sum = 0.0f32;
-                        for c in 0..ch.min(chunk.len() - frame_start) {
-                            sum += chunk[frame_start + c];
-                        }
-                        accumulator.push(sum / ch as f32);
-                    }
+                    ingest(&chunk, device_channels, &mut accumulator, &mut acc_l, &mut acc_r);
                 }
                 Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
                 Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
@@ -125,10 +131,14 @@ fn fft_loop(
                 bins: vec![0u8; OUTPUT_BINS],
                 rms: 0.0,
                 time: 0.0,
+                wave_l: vec![0i8; WAVE_POINTS],
+                wave_r: vec![0i8; WAVE_POINTS],
             };
             let _ = app_handle.emit("fft-data", &payload);
             std::thread::sleep(std::time::Duration::from_millis(100));
             accumulator.clear();
+            acc_l.clear();
+            acc_r.clear();
             continue;
         }
 
@@ -184,13 +194,51 @@ fn fft_loop(
                 0.0
             };
 
-            let payload = FftPayload { bins, rms, time };
+            let payload = FftPayload {
+                bins,
+                rms,
+                time,
+                wave_l: quantize_wave(&acc_l),
+                wave_r: quantize_wave(&acc_r),
+            };
             let _ = app_handle.emit("fft-data", &payload);
 
-            // Keep only the last FFT_SIZE samples in accumulator
+            // Keep only the last FFT_SIZE samples in each accumulator
             accumulator.drain(..start);
+            let trim = |v: &mut Vec<f32>| {
+                if v.len() > FFT_SIZE {
+                    let excess = v.len() - FFT_SIZE;
+                    v.drain(..excess);
+                }
+            };
+            trim(&mut acc_l);
+            trim(&mut acc_r);
 
             last_emit = std::time::Instant::now();
         }
+    }
+}
+
+/// Split an interleaved chunk into mono (for FFT) and per-channel (for the
+/// oscilloscope) accumulators. Mono sources duplicate into both channels.
+fn ingest(
+    chunk: &[f32],
+    device_channels: u16,
+    mono: &mut Vec<f32>,
+    left: &mut Vec<f32>,
+    right: &mut Vec<f32>,
+) {
+    let ch = (device_channels as usize).max(1);
+    for frame_start in (0..chunk.len()).step_by(ch) {
+        let avail = ch.min(chunk.len() - frame_start);
+        let mut sum = 0.0f32;
+        for c in 0..avail {
+            sum += chunk[frame_start + c];
+        }
+        mono.push(sum / ch as f32);
+        let l = chunk[frame_start];
+        let r = if avail > 1 { chunk[frame_start + 1] } else { l };
+        left.push(l);
+        right.push(r);
     }
 }

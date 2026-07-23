@@ -6,6 +6,9 @@ export interface FFTData {
   bins: number[];
   rms: number;
   time: number;
+  /** L/R oscilloscope waveforms, i8 quantized (-127..127), 512 points */
+  wave_l?: number[];
+  wave_r?: number[];
 }
 
 // Global listeners are set up once (not per-component)

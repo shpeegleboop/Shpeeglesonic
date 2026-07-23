@@ -10,6 +10,7 @@ import { PaintSplash } from './PaintSplash';
 import { MusicNotes } from './MusicNotes';
 import { CombinedVisualizer } from './CombinedVisualizer';
 import { BangerDetector } from './BangerDetector';
+import { StereoScope } from './StereoScope';
 import { VisualizerQuickSettings } from './VisualizerQuickSettings';
 import { VISUALIZER_MODES } from '../../stores/playerStore';
 
@@ -73,6 +74,8 @@ export function VisualizerContainer({ inline }: VisualizerContainerProps) {
         return <CombinedVisualizer {...props} />;
       case 'banger':
         return <BangerDetector {...props} />;
+      case 'scope':
+        return <StereoScope {...props} />;
       default:
         return <Spectrogram {...props} />;
     }
