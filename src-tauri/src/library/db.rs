@@ -80,7 +80,7 @@ const SCHEMA_SQL: &str = "
         CREATE INDEX IF NOT EXISTS idx_tracks_format ON tracks(format);
         CREATE INDEX IF NOT EXISTS idx_tracks_favorited ON tracks(favorited);
 
-        -- dup_flag's EXISTS probe (DUP_FLAG_SQL) matches on lower()-wrapped
+        -- dup_flag's EXISTS probe (same_recording_sql) gates on lower()-wrapped
         -- title+artist. Without an index over those exact expressions the
         -- subquery rescans the whole table per row — quadratic, and at 4000
         -- tracks that was 2.85s on every library query.
@@ -107,6 +107,15 @@ fn apply_schema(conn: &Connection) -> Result<(), String> {
     let _ = conn.execute("ALTER TABLE playlists ADD COLUMN sort_order INTEGER", []);
     // Backfill manual order for pre-migration playlists (creation order)
     let _ = conn.execute("UPDATE playlists SET sort_order = id WHERE sort_order IS NULL", []);
+
+    // Repair links written by the old title+artist-only matcher. Self-healing
+    // rather than one-shot: it also cleans up after a metadata edit that
+    // reveals a hidden row was never a duplicate.
+    match release_stale_duplicate_links(conn) {
+        Ok(n) if n > 0 => eprintln!("Restored {n} track(s) hidden as duplicates in error"),
+        Err(e) => eprintln!("Could not check for stale duplicate links: {e}"),
+        _ => {}
+    }
 
     Ok(())
 }
@@ -247,12 +256,100 @@ pub struct Track {
     pub dup_flag: bool,
 }
 
+/// How far two runtimes may drift and still be the same recording.
+///
+/// Measured over a ~4,000-track library: 90% of title+artist collisions sit
+/// within 5s of each other — the same recording ripped twice — while the tail
+/// past it is dominated by alternate takes (demos, live cuts, re-recordings)
+/// that merely share a name. Loosening this trades wrong groupings for missed
+/// suggestions, and wrong groupings are the expensive direction: the duplicates
+/// browser bulk-hides a whole group on one click.
+const DUP_DURATION_TOLERANCE_SECS: f64 = 5.0;
+
+/// Album-name markers for a release carrying alternate recordings rather than
+/// the canonical one. Matched as whole words, so "Alive" doesn't trip "live".
+///
+/// A studio album that happens to contain one of these in its name (Hole's
+/// "Live Through This") only loses dedup *suggestions* for its tracks — it
+/// never causes anything to be hidden — so the false-positive direction here
+/// is the harmless one.
+const ALT_RELEASE_KEYWORDS: &[&str] = &[
+    "live", "unplugged", "acoustic", "demo", "demos", "session", "sessions", "remix", "remixes",
+];
+
+/// `alias.album` normalized for comparison: lowercased, with the two apostrophe
+/// forms folded together. Taggers disagree on ' vs ’ constantly — a single
+/// library holds both "(What's The Story)" and "(What’s the Story)" — and a
+/// raw comparison would read those as different releases.
+fn album_key_expr(alias: &str) -> String {
+    format!(
+        "replace(lower(COALESCE({}.album, '')), '\u{2019}', '''')",
+        alias
+    )
+}
+
+/// True when `alias`'s album names a release of alternate recordings.
+///
+/// GLOB rather than LIKE: `[^a-z]` on both sides pins the keyword to a whole
+/// word against any punctuation, so "(demo)", "Live: London" and "[Acoustic]"
+/// all register while "Alive" and "Sessions" ⊅ "Obsession" do not.
+fn is_alt_release_expr(alias: &str) -> String {
+    let padded = format!("(' ' || {} || ' ')", album_key_expr(alias));
+    let clauses: Vec<String> = ALT_RELEASE_KEYWORDS
+        .iter()
+        .map(|kw| format!("{} GLOB '*[^a-z]{}[^a-z]*'", padded, kw))
+        .collect();
+    format!("({})", clauses.join(" OR "))
+}
+
+/// The single definition of "these two `tracks` rows are the same recording",
+/// shared by the d!? badge and the duplicates browser so the two can never
+/// disagree about what counts as a duplicate.
+///
+/// Title+artist is only the *candidate gate* — the part `idx_tracks_dup_probe`
+/// can serve — because it cannot tell a studio cut from its demo, live take or
+/// acoustic re-record. Everything after it is a disqualifier:
+///
+/// 1. Runtime drift past `DUP_DURATION_TOLERANCE_SECS` means a different take.
+///    Skipped when either side has no duration, so an unscanned row still
+///    matches on title+artist rather than silently dropping out.
+/// 2. Different discs of one release hold different versions by construction —
+///    album / B-sides / demos box sets tag every disc with the same album name,
+///    which is exactly how Oasis' *Be Here Now* deluxe collides with itself.
+/// 3. A live/acoustic/demo release's copy is a different performance unless it
+///    is literally the same release ripped twice. This also separates two
+///    different live albums from each other.
+fn same_recording_sql(a: &str, b: &str) -> String {
+    let album_a = album_key_expr(a);
+    let album_b = album_key_expr(b);
+    format!(
+        "lower(COALESCE({b}.title, '')) = lower(COALESCE({a}.title, ''))
+         AND lower(COALESCE({b}.artist, '')) = lower(COALESCE({a}.artist, ''))
+         AND ({a}.duration_seconds IS NULL OR {b}.duration_seconds IS NULL
+              OR abs({a}.duration_seconds - {b}.duration_seconds) <= {tol})
+         AND NOT ({a}.disc_number IS NOT NULL AND {b}.disc_number IS NOT NULL
+                  AND {a}.disc_number <> {b}.disc_number
+                  AND {album_a} = {album_b})
+         AND (NOT ({alt_a} OR {alt_b}) OR {album_a} = {album_b})",
+        a = a,
+        b = b,
+        tol = DUP_DURATION_TOLERANCE_SECS,
+        album_a = album_a,
+        album_b = album_b,
+        alt_a = is_alt_release_expr(a),
+        alt_b = is_alt_release_expr(b),
+    )
+}
+
 /// SQL fragment computing dup_flag for a `tracks t` row.
-const DUP_FLAG_SQL: &str = "CASE WHEN COALESCE(t.dup_reviewed, 0) = 0 AND COALESCE(t.title, '') != '' AND EXISTS(
-    SELECT 1 FROM tracks t2 WHERE t2.id != t.id AND t2.duplicate_of IS NULL
-      AND lower(COALESCE(t2.title, '')) = lower(COALESCE(t.title, ''))
-      AND lower(COALESCE(t2.artist, '')) = lower(COALESCE(t.artist, ''))
-  ) THEN 1 ELSE 0 END";
+fn dup_flag_sql() -> String {
+    format!(
+        "CASE WHEN COALESCE(t.dup_reviewed, 0) = 0 AND COALESCE(t.title, '') != '' AND EXISTS(
+            SELECT 1 FROM tracks t2 WHERE t2.id != t.id AND t2.duplicate_of IS NULL AND {}
+          ) THEN 1 ELSE 0 END",
+        same_recording_sql("t", "t2")
+    )
+}
 
 /// Get library tracks with optional search and sorting.
 pub fn get_tracks(
@@ -300,7 +397,7 @@ pub fn get_tracks(
          FROM tracks t
          WHERE duplicate_of IS NULL{}
          ORDER BY {} {}",
-        DUP_FLAG_SQL, where_clause, order_col, order_dir
+        dup_flag_sql(), where_clause, order_col, order_dir
     );
 
     let mut stmt = conn.prepare(&sql).map_err(|e| format!("Query error: {}", e))?;
@@ -438,18 +535,109 @@ pub fn set_track_field(
     Ok(())
 }
 
-/// A duplicate-browser row: the track plus whether it's currently hidden
-/// (duplicate_of set). Hidden tracks stay listed so they can be unhidden.
+/// A duplicate-browser row: the track, whether it's currently hidden
+/// (duplicate_of set), and which set of same-recording rows it belongs to.
+/// Hidden tracks stay listed so they can be unhidden.
 #[derive(Clone, serde::Serialize)]
 pub struct DuplicateCandidate {
     #[serde(flatten)]
     pub track: Track,
     pub hidden: bool,
+    /// Rows sharing a group_id are the same recording. The browser groups on
+    /// this instead of re-deriving it from title+artist, so what it displays —
+    /// and what its bulk-hide button acts on — can't drift from the matcher.
+    pub group_id: i64,
 }
 
-/// Every track (visible or hidden) that shares a non-empty title + artist
-/// with at least one other track — the working set for the duplicates browser.
+/// Every pair of track ids the matcher considers the same recording.
+/// Sourced from SQL so this and the d!? badge can't drift apart;
+/// `b.id > a.id` yields each unordered pair exactly once.
+fn matcher_pairs(conn: &Connection) -> Result<Vec<(i64, i64)>, String> {
+    let sql = format!(
+        "SELECT a.id, b.id FROM tracks a JOIN tracks b ON b.id > a.id
+         WHERE COALESCE(a.title, '') != '' AND {}",
+        same_recording_sql("a", "b")
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|e| format!("Query error: {}", e))?;
+    let pairs = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .map_err(|e| format!("Query error: {}", e))?
+        .flatten()
+        .collect();
+    Ok(pairs)
+}
+
+fn find_root(parent: &mut std::collections::HashMap<i64, i64>, id: i64) -> i64 {
+    let p = *parent.get(&id).unwrap_or(&id);
+    if p == id {
+        return id;
+    }
+    let root = find_root(parent, p);
+    parent.insert(id, root);
+    root
+}
+
+/// Merge pairs into connected components, mapping every id to its group's root.
+///
+/// The predicate is pairwise, but a run of near-identical rips should surface as
+/// one row set rather than fragmenting into overlapping pairs, so anything
+/// transitively connected merges. The lowest id wins the root, keeping group ids
+/// stable between runs.
+fn group_by_component(pairs: &[(i64, i64)]) -> std::collections::HashMap<i64, i64> {
+    let mut parent: std::collections::HashMap<i64, i64> = Default::default();
+    for &(a, b) in pairs {
+        parent.entry(a).or_insert(a);
+        parent.entry(b).or_insert(b);
+        let (ra, rb) = (find_root(&mut parent, a), find_root(&mut parent, b));
+        if ra != rb {
+            let (root, child) = if ra < rb { (ra, rb) } else { (rb, ra) };
+            parent.insert(child, root);
+        }
+    }
+    let ids: Vec<i64> = parent.keys().copied().collect();
+    ids.iter()
+        .map(|&id| (id, find_root(&mut parent, id)))
+        .collect()
+}
+
+/// Every track (visible or hidden) that `same_recording_sql` ties to at least
+/// one other track, tagged with its group — the duplicates browser's working set.
 pub fn get_duplicate_candidates(conn: &Connection) -> Result<Vec<DuplicateCandidate>, String> {
+    let mut pairs = matcher_pairs(conn)?;
+
+    // An already-hidden track belongs with whatever it was hidden behind, even
+    // if the matcher wouldn't pair them today — an edit to either row's metadata
+    // must never strand a hidden track outside every group, because the browser
+    // is the only way to unhide one. `release_stale_duplicate_links` clears the
+    // links that are wrong rather than merely surprising, so what survives here
+    // is a link worth honouring.
+    let mut stmt = conn
+        .prepare("SELECT duplicate_of, id FROM tracks WHERE duplicate_of IS NOT NULL")
+        .map_err(|e| format!("Query error: {}", e))?;
+    pairs.extend(
+        stmt.query_map([], |row| {
+            let (keeper, hidden): (i64, i64) = (row.get(0)?, row.get(1)?);
+            Ok((keeper.min(hidden), keeper.max(hidden)))
+        })
+        .map_err(|e| format!("Query error: {}", e))?
+        .flatten()
+        .filter(|(a, b)| a != b),
+    );
+
+    if pairs.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let group_of = group_by_component(&pairs);
+    let ids: Vec<i64> = group_of.keys().copied().collect();
+
+    // ids come from the DB, so interpolating them raises no injection concern
+    // and keeps us clear of SQLite's bound-parameter ceiling on large libraries.
+    let id_list = ids
+        .iter()
+        .map(|i| i.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
     let sql = format!(
         "SELECT id, file_path, file_name, title, artist, album_artist, album, genre,
                 year, track_number, disc_number, bpm, duration_seconds, format,
@@ -457,25 +645,102 @@ pub fn get_duplicate_candidates(conn: &Connection) -> Result<Vec<DuplicateCandid
                 album_art_color, play_count, favorited, {} as dup_flag,
                 (t.duplicate_of IS NOT NULL) as hidden
          FROM tracks t
-         WHERE COALESCE(t.title, '') != '' AND EXISTS (
-            SELECT 1 FROM tracks t2 WHERE t2.id != t.id
-              AND lower(COALESCE(t2.title, '')) = lower(COALESCE(t.title, ''))
-              AND lower(COALESCE(t2.artist, '')) = lower(COALESCE(t.artist, ''))
-         )
-         ORDER BY lower(COALESCE(artist, '')), lower(COALESCE(title, '')), id",
-        DUP_FLAG_SQL
+         WHERE t.id IN ({})",
+        dup_flag_sql(),
+        id_list
     );
     let mut stmt = conn.prepare(&sql).map_err(|e| format!("Query error: {}", e))?;
     let rows = stmt
         .query_map([], |row| {
+            let track = map_track_row(row)?;
+            let group_id = *group_of.get(&track.id).unwrap_or(&track.id);
             Ok(DuplicateCandidate {
-                track: map_track_row(row)?,
+                track,
                 hidden: row.get::<_, i32>(24)? != 0,
+                group_id,
             })
         })
         .map_err(|e| format!("Query error: {}", e))?;
 
-    Ok(rows.flatten().collect())
+    let mut out: Vec<DuplicateCandidate> = rows.flatten().collect();
+    // Sort here rather than in SQL: two distinct groups can share a title and
+    // artist (an album cut and its demo, each present twice), and the browser
+    // relies on a group's rows arriving contiguously.
+    out.sort_by(|x, y| {
+        let key = |c: &DuplicateCandidate| {
+            (
+                c.track.artist.clone().unwrap_or_default().to_lowercase(),
+                c.track.title.clone().unwrap_or_default().to_lowercase(),
+                c.group_id,
+                c.track.id,
+            )
+        };
+        key(x).cmp(&key(y))
+    });
+    Ok(out)
+}
+
+/// Un-hide tracks whose `duplicate_of` link the current matcher would no longer
+/// make, returning how many came back. Older builds paired on title+artist
+/// alone, so libraries carry live takes and demos hidden behind the studio cut
+/// they merely share a name with — and a hidden row is invisible everywhere
+/// except the duplicates browser, so leaving them is not an option.
+///
+/// A link is stale when the row and its keeper land in different components of
+/// the matcher's graph. Comparing components rather than testing the two rows
+/// directly matters: hiding picks whichever row in a group is visible, so a row
+/// can sit behind a keeper it doesn't pair with one-to-one but reaches through
+/// a third copy. Those are sound and must survive.
+///
+/// Byte-identical files are exempt: `collapse_identical_duplicates` links those
+/// on content rather than metadata, and an untitled pair legitimately fails the
+/// matcher's title gate. Nothing is deleted either way — this only clears the
+/// flag that hides a row from the library.
+pub fn release_stale_duplicate_links(conn: &Connection) -> Result<u32, String> {
+    let component = group_by_component(&matcher_pairs(conn)?);
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT a.id, a.duplicate_of FROM tracks a JOIN tracks k ON k.id = a.duplicate_of
+             WHERE a.duplicate_of IS NOT NULL
+               AND NOT (a.file_size IS NOT NULL AND a.file_size = k.file_size)",
+        )
+        .map_err(|e| format!("Query error: {}", e))?;
+    let links: Vec<(i64, i64)> = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .map_err(|e| format!("Query error: {}", e))?
+        .flatten()
+        .collect();
+
+    // A row the matcher pairs with nothing is its own component — `unwrap_or(id)`
+    // rather than comparing two Nones, which would read "same group" and leave
+    // precisely the worst links (a live take behind a studio cut, neither
+    // matching anything) in place.
+    let stale: Vec<i64> = links
+        .into_iter()
+        .filter(|(hidden, keeper)| {
+            component.get(hidden).copied().unwrap_or(*hidden)
+                != component.get(keeper).copied().unwrap_or(*keeper)
+        })
+        .map(|(hidden, _)| hidden)
+        .collect();
+    if stale.is_empty() {
+        return Ok(0);
+    }
+
+    // ids come from the DB, so interpolating them raises no injection concern
+    let id_list = stale
+        .iter()
+        .map(|i| i.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let released = conn
+        .execute(
+            &format!("UPDATE tracks SET duplicate_of = NULL WHERE id IN ({})", id_list),
+            [],
+        )
+        .map_err(|e| format!("Failed to release stale duplicate links: {}", e))?;
+    Ok(released as u32)
 }
 
 /// Hide a track behind a keeper (duplicate_of = keeper id) or unhide it (None).
@@ -830,7 +1095,7 @@ pub fn get_playlist_tracks(conn: &Connection, playlist_id: i64) -> Result<Vec<Tr
          JOIN playlist_tracks pt ON t.id = pt.track_id
          WHERE pt.playlist_id = ?1
          ORDER BY pt.position",
-        DUP_FLAG_SQL
+        dup_flag_sql()
     );
     let mut stmt = conn
         .prepare(&sql)
@@ -857,6 +1122,312 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         apply_schema(&conn).unwrap();
         conn
+    }
+
+    /// Insert one release's copy of a song. Everything the matcher looks at is
+    /// a parameter, because that's precisely what these tests vary.
+    fn insert_version(
+        conn: &Connection,
+        path: &str,
+        title: &str,
+        artist: &str,
+        album: &str,
+        disc: Option<i32>,
+        duration: f64,
+    ) -> i64 {
+        conn.execute(
+            "INSERT INTO tracks (file_path, file_name, title, artist, album, disc_number, duration_seconds)
+             VALUES (?1, ?1, ?2, ?3, ?4, ?5, ?6)",
+            params![path, title, artist, album, disc, duration],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    }
+
+    /// Track ids the library view marks with the d!? badge.
+    fn flagged_ids(conn: &Connection) -> Vec<i64> {
+        let mut ids: Vec<i64> = get_tracks(conn, "title", "asc", None)
+            .unwrap()
+            .into_iter()
+            .filter(|t| t.dup_flag)
+            .map(|t| t.id)
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    /// Candidate ids the duplicates browser would show, grouped.
+    fn candidate_groups(conn: &Connection) -> Vec<Vec<i64>> {
+        let mut by_group: std::collections::BTreeMap<i64, Vec<i64>> = Default::default();
+        for c in get_duplicate_candidates(conn).unwrap() {
+            by_group.entry(c.group_id).or_default().push(c.track.id);
+        }
+        by_group
+            .into_values()
+            .map(|mut g| {
+                g.sort();
+                g
+            })
+            .collect()
+    }
+
+    #[test]
+    fn same_recording_ripped_twice_is_still_a_duplicate() {
+        let conn = test_conn();
+        // The Masterplan's "Half the World Away" is the Definitely Maybe
+        // recording — different album, near-identical runtime.
+        insert_version(&conn, "C:/dm.flac", "Half the World Away", "Oasis", "Definitely Maybe", Some(1), 264.0);
+        insert_version(&conn, "C:/mp.flac", "Half the World Away", "Oasis", "The Masterplan", Some(1), 262.0);
+
+        assert_eq!(flagged_ids(&conn), vec![1, 2]);
+        assert_eq!(candidate_groups(&conn), vec![vec![1, 2]]);
+    }
+
+    #[test]
+    fn runtime_drift_past_the_tolerance_is_a_different_take() {
+        let conn = test_conn();
+        insert_version(&conn, "C:/a.flac", "D'You Know What I Mean?", "Oasis", "Be Here Now", None, 463.0);
+        insert_version(&conn, "C:/b.flac", "D'You Know What I Mean?", "Oasis", "Be Here Now", None, 436.0);
+
+        assert!(flagged_ids(&conn).is_empty(), "27s apart is a different recording");
+        assert!(candidate_groups(&conn).is_empty());
+    }
+
+    #[test]
+    fn different_discs_of_one_release_hold_different_versions() {
+        let conn = test_conn();
+        // Be Here Now deluxe: CD1 is the album, CD3 the Mustique demos. Both
+        // tagged album="Be Here Now", and these two runtimes are within the
+        // duration tolerance — only the disc number separates them.
+        insert_version(&conn, "C:/cd1.flac", "Stand by Me", "Oasis", "Be Here Now", Some(1), 356.0);
+        insert_version(&conn, "C:/cd3.flac", "Stand by Me", "Oasis", "Be Here Now", Some(3), 361.0);
+
+        assert!(flagged_ids(&conn).is_empty(), "disc 1 vs disc 3 is album vs demo");
+        assert!(candidate_groups(&conn).is_empty());
+
+        // Same disc, same runtime — that really is the file twice over
+        insert_version(&conn, "C:/cd1-copy.flac", "Stand by Me", "Oasis", "Be Here Now", Some(1), 356.0);
+        assert_eq!(flagged_ids(&conn), vec![1, 3]);
+    }
+
+    #[test]
+    fn a_live_release_is_not_the_studio_cut() {
+        let conn = test_conn();
+        // Runtimes deliberately inside the duration tolerance: only the album
+        // naming a live release tells these apart.
+        insert_version(&conn, "C:/studio.flac", "Root", "Deftones", "Adrenaline", Some(1), 221.0);
+        insert_version(&conn, "C:/live.flac", "Root", "Deftones", "Live at Dynamo Open Air 1998", Some(1), 223.0);
+
+        assert!(flagged_ids(&conn).is_empty());
+        assert!(candidate_groups(&conn).is_empty());
+    }
+
+    #[test]
+    fn two_live_albums_are_two_performances() {
+        let conn = test_conn();
+        insert_version(&conn, "C:/syd.flac", "Evan Finds the Third Room", "Khruangbin", "Live at Sydney Opera House", Some(1), 329.0);
+        insert_version(&conn, "C:/rbc.flac", "Evan Finds the Third Room", "Khruangbin", "Live at RBC Echo Beach", Some(1), 325.0);
+
+        assert!(flagged_ids(&conn).is_empty(), "different venues, different takes");
+    }
+
+    #[test]
+    fn the_same_live_album_ripped_twice_is_a_duplicate() {
+        let conn = test_conn();
+        insert_version(&conn, "C:/x.flac", "Evan Finds the Third Room", "Khruangbin", "Live at Sydney Opera House", Some(1), 329.0);
+        insert_version(&conn, "C:/y.flac", "Evan Finds the Third Room", "Khruangbin", "Live at Sydney Opera House", Some(1), 329.0);
+
+        assert_eq!(flagged_ids(&conn), vec![1, 2]);
+    }
+
+    #[test]
+    fn alt_release_keywords_match_whole_words_only() {
+        let conn = test_conn();
+        // "Alive" must not read as "live", or these two stop being duplicates
+        insert_version(&conn, "C:/p.flac", "Black", "Pearl Jam", "Alive", Some(1), 343.0);
+        insert_version(&conn, "C:/q.flac", "Black", "Pearl Jam", "Ten", Some(1), 344.0);
+
+        assert_eq!(flagged_ids(&conn), vec![1, 2]);
+    }
+
+    #[test]
+    fn parenthesised_version_markers_still_register() {
+        let conn = test_conn();
+        // Punctuation is flattened before matching, so "(demo)" reads as a word
+        insert_version(&conn, "C:/alb.flac", "If We Shadows", "Oasis", "Be Here Now", Some(1), 293.0);
+        insert_version(&conn, "C:/dem.flac", "If We Shadows", "Oasis", "Be Here Now (demo)", Some(1), 291.0);
+
+        assert!(flagged_ids(&conn).is_empty());
+    }
+
+    #[test]
+    fn the_two_apostrophes_name_the_same_release() {
+        let conn = test_conn();
+        // Same live album, tagged by two rippers who disagreed about ’ vs '.
+        // Without folding them the pair reads as two different performances.
+        insert_version(&conn, "C:/a.flac", "Hello", "Oasis", "Live at Knebworth '96", Some(1), 203.0);
+        insert_version(&conn, "C:/b.flac", "Hello", "Oasis", "Live at Knebworth \u{2019}96", Some(1), 203.0);
+
+        assert_eq!(flagged_ids(&conn), vec![1, 2]);
+    }
+
+    #[test]
+    fn stale_links_from_the_old_matcher_are_released() {
+        let conn = test_conn();
+        // Exactly the Khruangbin shape: two live takes hidden behind the studio
+        // cut they only share a title with.
+        let studio = insert_version(&conn, "C:/m.flac", "Time (You and I)", "Khruangbin", "Mordechai", Some(1), 342.0);
+        let rcmh = insert_version(&conn, "C:/r.flac", "Time (You and I)", "Khruangbin", "Live at Radio City Music Hall", Some(1), 541.0);
+        let syd = insert_version(&conn, "C:/s.flac", "Time (You and I)", "Khruangbin", "Live at Sydney Opera House", Some(1), 367.0);
+        set_track_hidden(&conn, rcmh, Some(studio)).unwrap();
+        set_track_hidden(&conn, syd, Some(studio)).unwrap();
+        assert_eq!(get_tracks(&conn, "title", "asc", None).unwrap().len(), 1);
+
+        assert_eq!(release_stale_duplicate_links(&conn).unwrap(), 2);
+        assert_eq!(get_tracks(&conn, "title", "asc", None).unwrap().len(), 3);
+        assert!(get_duplicate_candidates(&conn).unwrap().is_empty());
+
+        // Idempotent — a second pass has nothing left to do
+        assert_eq!(release_stale_duplicate_links(&conn).unwrap(), 0);
+    }
+
+    #[test]
+    fn a_link_through_a_third_copy_survives_the_repair() {
+        let conn = test_conn();
+        // A-B and B-C pair, A-C are 10s apart and don't. Hiding C picks the
+        // first visible row as keeper, which can be A — a sound link the repair
+        // must not mistake for a stale one.
+        let a = insert_version(&conn, "C:/a.flac", "Wonderwall", "Oasis", "Morning Glory", Some(1), 258.0);
+        let b = insert_version(&conn, "C:/b.flac", "Wonderwall", "Oasis", "Morning Glory", Some(1), 263.0);
+        let c = insert_version(&conn, "C:/c.flac", "Wonderwall", "Oasis", "Morning Glory", Some(1), 268.0);
+        set_track_hidden(&conn, b, Some(a)).unwrap();
+        set_track_hidden(&conn, c, Some(a)).unwrap();
+
+        assert_eq!(release_stale_duplicate_links(&conn).unwrap(), 0);
+        assert_eq!(get_tracks(&conn, "title", "asc", None).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_genuine_hidden_duplicate_survives_the_repair() {
+        let conn = test_conn();
+        let keeper = insert_version(&conn, "C:/a.flac", "Live Forever", "Oasis", "Definitely Maybe", Some(1), 277.0);
+        let dupe = insert_version(&conn, "C:/b.mp3", "Live Forever", "Oasis", "Definitely Maybe", Some(1), 277.0);
+        set_track_hidden(&conn, dupe, Some(keeper)).unwrap();
+
+        assert_eq!(release_stale_duplicate_links(&conn).unwrap(), 0);
+        assert_eq!(get_tracks(&conn, "title", "asc", None).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn byte_identical_untitled_files_stay_collapsed() {
+        let conn = test_conn();
+        // No title means the matcher's gate can't see these, but
+        // collapse_identical_duplicates linked them on content — leave it be.
+        conn.execute(
+            "INSERT INTO tracks (file_path, file_name, file_size) VALUES
+             ('C:/a.mp3', 'a.mp3', 4096), ('C:/b.mp3', 'b.mp3', 4096)",
+            [],
+        )
+        .unwrap();
+        set_track_hidden(&conn, 2, Some(1)).unwrap();
+
+        assert_eq!(release_stale_duplicate_links(&conn).unwrap(), 0);
+        assert_eq!(get_tracks(&conn, "title", "asc", None).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_hidden_track_stays_reachable_after_it_stops_matching() {
+        let conn = test_conn();
+        let keeper = insert_version(&conn, "C:/a.flac", "Stay Young", "Oasis", "The Masterplan", Some(1), 305.0);
+        let hidden = insert_version(&conn, "C:/b.flac", "Stay Young", "Oasis", "The Masterplan", Some(1), 305.0);
+        set_track_hidden(&conn, hidden, Some(keeper)).unwrap();
+
+        // Retag the hidden row as the demo it actually is — the matcher now
+        // says these two are unrelated, but the browser must still offer it
+        // back, or it is stranded: hidden from the library, absent here.
+        conn.execute(
+            "UPDATE tracks SET album = 'Mustique Demos', duration_seconds = 296.0 WHERE id = ?1",
+            params![hidden],
+        )
+        .unwrap();
+
+        let cands = get_duplicate_candidates(&conn).unwrap();
+        let row = cands
+            .iter()
+            .find(|c| c.track.id == hidden)
+            .expect("hidden track must remain listed so it can be unhidden");
+        assert!(row.hidden);
+        assert_eq!(
+            row.group_id,
+            cands.iter().find(|c| c.track.id == keeper).unwrap().group_id,
+            "it should sit with the track it was hidden behind"
+        );
+
+        set_track_hidden(&conn, hidden, None).unwrap();
+        assert_eq!(get_tracks(&conn, "title", "asc", None).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_group_drops_the_odd_version_out() {
+        let conn = test_conn();
+        // Two real copies plus one demo that merely shares the name. The demo
+        // must not land in the group — the browser bulk-hides whole groups.
+        insert_version(&conn, "C:/1.flac", "Stay Young", "Oasis", "The Masterplan", Some(1), 305.0);
+        insert_version(&conn, "C:/2.mp3", "Stay Young", "Oasis", "The Masterplan", Some(1), 305.0);
+        insert_version(&conn, "C:/3.flac", "Stay Young", "Oasis", "Mustique Demos", Some(1), 296.0);
+
+        assert_eq!(candidate_groups(&conn), vec![vec![1, 2]]);
+    }
+
+    #[test]
+    fn missing_durations_stay_matchable() {
+        let conn = test_conn();
+        // Nothing to compare — fall back to title+artist rather than silently
+        // dropping the pair.
+        conn.execute(
+            "INSERT INTO tracks (file_path, file_name, title, artist) VALUES
+             ('C:/a.flac', 'a.flac', 'Same Song', 'Artist'),
+             ('C:/b.mp3', 'b.mp3', 'Same Song', 'Artist')",
+            [],
+        )
+        .unwrap();
+        assert_eq!(flagged_ids(&conn), vec![1, 2]);
+    }
+
+    #[test]
+    fn removing_a_track_leaves_the_playlist_reorderable() {
+        let conn = test_conn();
+        conn.execute(
+            "INSERT INTO tracks (file_path, file_name, title) VALUES
+             ('C:/1.flac', '1.flac', 'One'),
+             ('C:/2.flac', '2.flac', 'Two'),
+             ('C:/3.flac', '3.flac', 'Three')",
+            [],
+        )
+        .unwrap();
+        let pl = create_playlist(&conn, "Mix").unwrap();
+        for id in 1..=3 {
+            add_track_to_playlist(&conn, pl, id).unwrap();
+        }
+
+        remove_track_from_playlist(&conn, pl, 2).unwrap();
+        let titles = |c: &Connection| -> Vec<String> {
+            get_playlist_tracks(c, pl)
+                .unwrap()
+                .into_iter()
+                .map(|t| t.title.unwrap_or_default())
+                .collect()
+        };
+        assert_eq!(titles(&conn), vec!["One", "Three"]);
+
+        // Removal leaves a gap in `position`; reorder works off rank, not the
+        // raw values, so the shortened list still moves correctly.
+        reorder_playlist_track(&conn, pl, 1, 0).unwrap();
+        assert_eq!(titles(&conn), vec!["Three", "One"]);
+
+        // A later add must not collide with the surviving positions
+        add_track_to_playlist(&conn, pl, 2).unwrap();
+        assert_eq!(titles(&conn), vec!["Three", "One", "Two"]);
     }
 
     #[test]
@@ -1045,7 +1616,7 @@ mod tests {
         assert!(
             elapsed < std::time::Duration::from_millis(500),
             "get_tracks took {:?} for 4000 tracks — the idx_tracks_dup_probe \
-             expression index is missing or no longer matches DUP_FLAG_SQL",
+             expression index is missing or no longer matches same_recording_sql",
             elapsed
         );
     }

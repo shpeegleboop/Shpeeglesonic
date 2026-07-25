@@ -10,7 +10,8 @@ interface PlaylistViewProps {
 }
 
 export function PlaylistView({ playlistId }: PlaylistViewProps) {
-  const { playlistTracks, fetchPlaylistTracks, reorderPlaylistTrack } = usePlaylist();
+  const { playlistTracks, fetchPlaylistTracks, reorderPlaylistTrack, removeTrackFromPlaylist } =
+    usePlaylist();
   const player = useAudioPlayer();
   const [query, setQuery] = useState('');
 
@@ -50,6 +51,10 @@ export function PlaylistView({ playlistId }: PlaylistViewProps) {
                   await fetchPlaylistTracks(playlistId);
                 }
           }
+          onRemoveFromPlaylist={async (track) => {
+            await removeTrackFromPlaylist(playlistId, track.id);
+            await fetchPlaylistTracks(playlistId);
+          }}
           onPlay={(track) => {
             const idx = filtered.findIndex((t) => t.id === track.id);
             usePlayerStore.getState().setQueue(filtered, idx);

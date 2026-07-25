@@ -167,7 +167,7 @@ export function SettingsPanel() {
           <p className="text-xs text-gray-500 mb-2">
             Byte-identical files are collapsed automatically after each scan. Tracks marked{' '}
             <span className="text-[10px] font-mono text-amber-400 bg-amber-400/10 border border-amber-400/30 rounded px-1">d!?</span>{' '}
-            share a title &amp; artist with another file — edit their metadata to confirm or dismiss.
+            look like the same recording as another file — edit their metadata to confirm or dismiss.
           </p>
           <button
             onClick={() => setShowDuplicates(true)}

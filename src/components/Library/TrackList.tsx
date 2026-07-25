@@ -25,6 +25,8 @@ interface TrackListProps {
   emptySubtitle?: string;
   /** Enables drag-to-reorder (playlist views). Only active when ungrouped. */
   onReorder?: (from: number, to: number) => void;
+  /** Supplied only in playlist view — adds "Remove from Playlist" to the menu. */
+  onRemoveFromPlaylist?: (track: Track) => void;
 }
 
 // Sort fields that should show grouped/collapsible headers
@@ -76,7 +78,7 @@ type VirtualRow =
   | { type: 'header'; key: string; label: string; rawValue: string | null; count: number; groupTracks: Track[] }
   | { type: 'track'; key: string; track: Track; trackIndex: number };
 
-export function TrackList({ tracks, onPlay, sortBy = 'title', onLibraryChanged, emptyTitle, emptySubtitle, onReorder }: TrackListProps) {
+export function TrackList({ tracks, onPlay, sortBy = 'title', onLibraryChanged, emptyTitle, emptySubtitle, onReorder, onRemoveFromPlaylist }: TrackListProps) {
   const parentRef = useRef<HTMLDivElement>(null);
   const currentTrack = usePlayerStore((s) => s.currentTrack);
   const [contextMenu, setContextMenu] = useState<{ track: Track; x: number; y: number } | null>(null);
@@ -338,7 +340,7 @@ export function TrackList({ tracks, onPlay, sortBy = 'title', onLibraryChanged, 
                       {track.dup_flag && (
                         <span
                           className="flex-shrink-0 text-[10px] font-mono text-amber-400 bg-amber-400/10 border border-amber-400/30 rounded px-1 leading-tight"
-                          title="Possible duplicate — same title & artist as another track. Edit its metadata to dismiss."
+                          title="Possible duplicate — another track looks like the same recording. Edit its metadata to dismiss."
                         >
                           d!?
                         </span>
@@ -373,6 +375,7 @@ export function TrackList({ tracks, onPlay, sortBy = 'title', onLibraryChanged, 
           y={contextMenu.y}
           onClose={() => setContextMenu(null)}
           onEditMetadata={(track) => setEditingTrack(track)}
+          onRemoveFromPlaylist={onRemoveFromPlaylist}
         />
       )}
 

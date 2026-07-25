@@ -12,9 +12,11 @@ interface TrackContextMenuProps {
   y: number;
   onClose: () => void;
   onEditMetadata?: (track: Track) => void;
+  /** Supplied only in playlist view — omitted elsewhere, which hides the item. */
+  onRemoveFromPlaylist?: (track: Track) => void;
 }
 
-export function TrackContextMenu({ track, x, y, onClose, onEditMetadata }: TrackContextMenuProps) {
+export function TrackContextMenu({ track, x, y, onClose, onEditMetadata, onRemoveFromPlaylist }: TrackContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
   const [showPlaylistSub, setShowPlaylistSub] = useState(false);
   const subCloseTimer = useRef<number | null>(null);
@@ -205,6 +207,21 @@ export function TrackContextMenu({ track, x, y, onClose, onEditMetadata }: Track
         >
           Edit Metadata…
         </div>
+      )}
+
+      {onRemoveFromPlaylist && (
+        <>
+          <div className="h-px bg-cosmic-border/30 my-1" />
+          <div
+            className={`${menuItemClass} !text-red-400 hover:!text-red-300 hover:!bg-red-500/15`}
+            onClick={() => {
+              onClose();
+              onRemoveFromPlaylist(track);
+            }}
+          >
+            Remove from Playlist
+          </div>
+        </>
       )}
     </div>,
     document.body

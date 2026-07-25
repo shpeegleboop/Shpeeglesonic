@@ -11,12 +11,16 @@ interface DuplicatesModalProps {
   onClose: () => void;
 }
 
-type DupEntry = Track & { hidden: boolean };
+type DupEntry = Track & { hidden: boolean; group_id: number };
 
 /**
- * Lists every song with multiple versions (same title + artist), including
- * versions already hidden, side by side with audio quality. Tick a version to
- * hide it from the library (nothing is deleted); untick to bring it back.
+ * Lists every song the library holds more than one copy of, including copies
+ * already hidden, side by side with audio quality. Tick a copy to hide it from
+ * the library (nothing is deleted); untick to bring it back.
+ *
+ * Grouping follows the backend's group_id rather than re-deriving it here —
+ * title+artist alone would re-merge the alternate takes (demos, live cuts) the
+ * matcher deliberately separated, and "Hide lower quality" acts on whole groups.
  */
 export function DuplicatesModal({ onClose }: DuplicatesModalProps) {
   const library = useLibrary();
@@ -46,12 +50,11 @@ export function DuplicatesModal({ onClose }: DuplicatesModalProps) {
   }, []);
 
   const groups = useMemo(() => {
-    const map = new Map<string, DupEntry[]>();
+    const map = new Map<number, DupEntry[]>();
     for (const t of entries) {
-      const key = `${(t.title ?? '').toLowerCase()}|${(t.artist ?? '').toLowerCase()}`;
-      const list = map.get(key);
+      const list = map.get(t.group_id);
       if (list) list.push(t);
-      else map.set(key, [t]);
+      else map.set(t.group_id, [t]);
     }
     // Show groups still needing attention: something hidden or still flagged
     return Array.from(map.values()).filter((g) => g.some((e) => e.hidden || e.dup_flag));
@@ -117,9 +120,10 @@ export function DuplicatesModal({ onClose }: DuplicatesModalProps) {
         </div>
 
         <p className="px-5 pt-3 text-xs text-gray-500 flex-shrink-0">
-          Versions of the same song, side by side. Tick <span className="text-gray-300">Hide</span> to
-          remove a version from the library (the file stays on disk — untick to bring it back), or
-          edit metadata to confirm a track isn't a duplicate.
+          Copies of the same recording, side by side — alternate takes (demos, live and acoustic
+          cuts) are kept apart. Tick <span className="text-gray-300">Hide</span> to remove a copy
+          from the library (the file stays on disk — untick to bring it back), or edit metadata to
+          confirm a track isn't a duplicate.
         </p>
 
         <div className="flex-1 overflow-y-auto px-5 py-3 space-y-4">
@@ -131,11 +135,11 @@ export function DuplicatesModal({ onClose }: DuplicatesModalProps) {
           {groups.map((group) => {
             const visibleCount = group.filter((e) => !e.hidden).length;
             return (
-              <div key={`${group[0].title}-${group[0].artist}`} className="border border-cosmic-border/30 rounded-lg overflow-hidden">
+              <div key={group[0].group_id} className="border border-cosmic-border/30 rounded-lg overflow-hidden">
                 <div className="px-3 py-1.5 bg-cosmic-panel/60 text-sm">
                   <span className="font-semibold text-neon-purple">{group[0].title}</span>
                   <span className="text-gray-400"> — {group[0].artist ?? 'Unknown Artist'}</span>
-                  <span className="text-xs text-gray-500 ml-2">{group.length} versions</span>
+                  <span className="text-xs text-gray-500 ml-2">{group.length} copies</span>
                 </div>
                 {group.map((t) => (
                   <div
@@ -150,10 +154,10 @@ export function DuplicatesModal({ onClose }: DuplicatesModalProps) {
                       }`}
                       title={
                         !t.hidden && visibleCount === 1
-                          ? 'The last visible version cannot be hidden'
+                          ? 'The last visible copy cannot be hidden'
                           : t.hidden
-                            ? 'Untick to restore this version to the library'
-                            : 'Hide this version from the library'
+                            ? 'Untick to restore this copy to the library'
+                            : 'Hide this copy from the library'
                       }
                     >
                       <input

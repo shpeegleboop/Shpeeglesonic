@@ -143,6 +143,10 @@ pub async fn scan_folder(
         if summary.added + summary.updated > 0 {
             let conn = pool.lock().map_err(|e| e.to_string())?;
             let _ = db::collapse_identical_duplicates(&conn);
+            // Retagging can reveal that a hidden row was never a duplicate (a
+            // live take finally naming its album). Without this the correction
+            // wouldn't surface until the next launch.
+            let _ = db::release_stale_duplicate_links(&conn);
         }
 
         let _ = emitter.emit("scan-progress", serde_json::Value::Null);
@@ -223,7 +227,13 @@ pub fn update_track_metadata(
 
     // Write the file tags first — if that fails, the DB stays untouched
     crate::audio::metadata::write_metadata(&path, &update)?;
-    db::update_track_metadata(&conn, track_id, &update)
+    db::update_track_metadata(&conn, track_id, &update)?;
+
+    // Editing metadata is how the user says "this isn't a duplicate" — naming
+    // the live album it came from should bring the track straight back rather
+    // than leaving it hidden until the next launch.
+    let _ = db::release_stale_duplicate_links(&conn);
+    Ok(())
 }
 
 #[derive(serde::Serialize)]
