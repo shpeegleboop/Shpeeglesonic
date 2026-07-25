@@ -84,6 +84,7 @@ pub fn run() {
             commands::reorder_playlist_track,
             commands::get_duplicate_candidates,
             commands::set_track_hidden,
+            commands::prune_missing_tracks,
             commands::get_playlist_tracks,
             // Lyrics
             commands::fetch_lyrics,

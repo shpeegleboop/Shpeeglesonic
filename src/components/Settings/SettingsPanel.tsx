@@ -1,19 +1,55 @@
 import { useEffect, useState } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
+import { invoke } from '@tauri-apps/api/core';
 import { useLibrary } from '../../hooks/useLibrary';
 import { usePlayerStore } from '../../stores/playerStore';
 import { DuplicatesModal } from '../Library/DuplicatesModal';
+import { ConfirmDialog } from '../ConfirmDialog';
 
 export function SettingsPanel() {
   const library = useLibrary();
   const vizSettings = usePlayerStore((s) => s.visualizerSettings);
   const updateViz = usePlayerStore((s) => s.updateVisualizerSettings);
+  const scanProgress = usePlayerStore((s) => s.scanProgress);
   const [scanStatus, setScanStatus] = useState<{ ok: boolean; text: string } | null>(null);
   const [showDuplicates, setShowDuplicates] = useState(false);
+  const [missing, setMissing] = useState<string[]>([]);
+  const [confirmPrune, setConfirmPrune] = useState(false);
 
   useEffect(() => {
     library.fetchFolders();
   }, []);
+
+  const report = (s: { added: number; updated: number; skipped: number; errors: number }) =>
+    [
+      `Added ${s.added}`,
+      `updated ${s.updated}`,
+      s.skipped > 0 ? `skipped ${s.skipped}` : null,
+      s.errors > 0 ? `${s.errors} errors` : null,
+    ]
+      .filter(Boolean)
+      .join(', ');
+
+  const runAll = async (incremental: boolean) => {
+    setScanStatus(null);
+    setMissing([]);
+    try {
+      const totals = { added: 0, updated: 0, skipped: 0, errors: 0 };
+      const gone: string[] = [];
+      for (const f of library.folders) {
+        const s = incremental ? await library.quickScan(f) : await library.scanFolder(f);
+        totals.added += s.added;
+        totals.updated += s.updated;
+        totals.skipped += s.skipped;
+        totals.errors += s.errors;
+        gone.push(...s.missing);
+      }
+      setMissing(gone);
+      setScanStatus({ ok: true, text: report(totals) });
+    } catch (e) {
+      setScanStatus({ ok: false, text: `Scan failed: ${e}` });
+    }
+  };
 
   const handleAddFolder = async () => {
     const result = await open({
@@ -21,14 +57,14 @@ export function SettingsPanel() {
       multiple: false,
       title: 'Select Music Folder',
     });
-    if (result) {
-      setScanStatus(null);
-      try {
-        const count = await library.scanFolder(result as string);
-        setScanStatus({ ok: true, text: `Scanned ${count} tracks` });
-      } catch (e) {
-        setScanStatus({ ok: false, text: `Scan failed: ${e}` });
-      }
+    if (!result) return;
+    setScanStatus(null);
+    setMissing([]);
+    try {
+      const s = await library.scanFolder(result as string);
+      setScanStatus({ ok: true, text: report(s) });
+    } catch (e) {
+      setScanStatus({ ok: false, text: `Scan failed: ${e}` });
     }
   };
 
@@ -59,36 +95,72 @@ export function SettingsPanel() {
           </ul>
         )}
 
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
           <button onClick={handleAddFolder} className="btn-primary" disabled={library.loading}>
-            {library.loading ? 'Scanning...' : 'Add Folder'}
+            Add Folder
           </button>
           {library.folders.length > 0 && (
-            <button
-              onClick={async () => {
-                setScanStatus(null);
-                try {
-                  let total = 0;
-                  for (const f of library.folders) {
-                    total += await library.scanFolder(f);
-                  }
-                  setScanStatus({ ok: true, text: `Rescanned ${total} tracks` });
-                } catch (e) {
-                  setScanStatus({ ok: false, text: `Rescan failed: ${e}` });
-                }
-              }}
-              className="btn-primary"
-              disabled={library.loading}
-            >
-              Rescan All
-            </button>
+            <>
+              <button
+                onClick={() => runAll(true)}
+                className="btn-primary"
+                disabled={library.loading}
+                title="Only reads files that are new or have changed since the last scan"
+              >
+                Scan for New Tracks
+              </button>
+              <button onClick={() => runAll(false)} className="btn-primary" disabled={library.loading}>
+                Rescan All
+              </button>
+            </>
           )}
         </div>
+
+        {scanProgress && (
+          <p className="text-xs text-neon-cyan font-mono">
+            Scanning… {scanProgress.done} / {scanProgress.total}
+            {scanProgress.label && ` — ${scanProgress.label}`}
+          </p>
+        )}
+        {library.loading && !scanProgress && (
+          <p className="text-xs text-gray-500">Checking files…</p>
+        )}
 
         {scanStatus && (
           <p className={`text-xs ${scanStatus.ok ? 'text-neon-cyan' : 'text-neon-red'}`}>
             {scanStatus.text}
           </p>
+        )}
+
+        {missing.length > 0 && (
+          <div className="flex items-center gap-3 rounded border border-amber-400/30 bg-amber-400/10 px-3 py-2">
+            <span className="flex-1 text-xs text-amber-300">
+              {missing.length} {missing.length === 1 ? 'track is' : 'tracks are'} in the library but
+              missing from disk.
+            </span>
+            <button
+              onClick={() => setConfirmPrune(true)}
+              className="flex-shrink-0 text-xs text-neon-red hover:text-red-400"
+            >
+              Remove them
+            </button>
+          </div>
+        )}
+
+        {confirmPrune && (
+          <ConfirmDialog
+            title="Remove missing tracks?"
+            message={`${missing.length} tracks will be removed from the library, along with their playlist entries and favorites. The files themselves are already gone from disk.`}
+            confirmLabel="Remove"
+            onCancel={() => setConfirmPrune(false)}
+            onConfirm={async () => {
+              const removed = await invoke<number>('prune_missing_tracks', { paths: missing });
+              setConfirmPrune(false);
+              setMissing([]);
+              setScanStatus({ ok: true, text: `Removed ${removed} missing tracks` });
+              library.fetchTracks();
+            }}
+          />
         )}
 
         <div className="pt-2 border-t border-cosmic-border/20">

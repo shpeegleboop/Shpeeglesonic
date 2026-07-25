@@ -7,6 +7,8 @@ pub struct TrackMetadata {
     pub file_path: String,
     pub file_name: String,
     pub file_size: u64,
+    /// Seconds since the Unix epoch. Drives incremental scanning.
+    pub file_mtime: Option<i64>,
     pub format: String,
     pub title: Option<String>,
     pub artist: Option<String>,
@@ -34,9 +36,14 @@ pub fn extract_metadata(path: &str) -> Result<TrackMetadata, String> {
         .unwrap_or("unknown")
         .to_string();
 
-    let file_size = std::fs::metadata(path)
-        .map(|m| m.len())
-        .unwrap_or(0);
+    // One stat yields both the size and the mtime the incremental scan needs.
+    let fs_meta = std::fs::metadata(path).ok();
+    let file_size = fs_meta.as_ref().map(|m| m.len()).unwrap_or(0);
+    let file_mtime = fs_meta
+        .as_ref()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64);
 
     let format = file_path
         .extension()
@@ -123,6 +130,7 @@ pub fn extract_metadata(path: &str) -> Result<TrackMetadata, String> {
         file_path: path.to_string(),
         file_name,
         file_size,
+        file_mtime,
         format,
         title,
         artist,
@@ -246,38 +254,36 @@ pub fn write_single_field(path: &str, field: &str, value: &str) -> Result<(), St
 /// Extract and save album art from an audio file.
 /// Returns the path to the cached art file, or None if no art found.
 pub fn extract_album_art(audio_path: &str, cache_dir: &Path) -> Option<String> {
-    let tagged_file = Probe::open(audio_path).ok()?.read().ok()?;
-
-    let tag = tagged_file.primary_tag().or_else(|| tagged_file.first_tag())?;
-
-    // Get the first picture
-    let pictures = tag.pictures();
-    let picture = pictures.first()?;
-
-    // Create cache dir if needed
-    std::fs::create_dir_all(cache_dir).ok()?;
-
-    // Generate hash-based filename
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
+
     let mut hasher = DefaultHasher::new();
     audio_path.hash(&mut hasher);
     let hash = hasher.finish();
+
+    // Check the cache BEFORE opening the file. The extension depends on the
+    // picture's MIME type, which is why this used to sit after a full probe —
+    // testing both candidates instead saves a tag parse per already-cached
+    // track, which is half the cost of a full rescan.
+    for ext in ["jpg", "png"] {
+        let candidate = cache_dir.join(format!("{:016x}.{}", hash, ext));
+        if candidate.exists() {
+            return Some(candidate.to_string_lossy().to_string());
+        }
+    }
+
+    let tagged_file = Probe::open(audio_path).ok()?.read().ok()?;
+    let tag = tagged_file.primary_tag().or_else(|| tagged_file.first_tag())?;
+    let pictures = tag.pictures();
+    let picture = pictures.first()?;
+
+    std::fs::create_dir_all(cache_dir).ok()?;
 
     let ext = match picture.mime_type() {
         Some(lofty::picture::MimeType::Png) => "png",
         _ => "jpg",
     };
-
-    let art_filename = format!("{:016x}.{}", hash, ext);
-    let art_path = cache_dir.join(&art_filename);
-
-    // Skip if already cached
-    if art_path.exists() {
-        return Some(art_path.to_string_lossy().to_string());
-    }
-
-    // Write art to cache
+    let art_path = cache_dir.join(format!("{:016x}.{}", hash, ext));
     std::fs::write(&art_path, picture.data()).ok()?;
 
     Some(art_path.to_string_lossy().to_string())

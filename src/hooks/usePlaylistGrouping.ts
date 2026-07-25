@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { type Track } from '../stores/playerStore';
 import { type Playlist } from './usePlaylist';
 import { type useLibrary } from './useLibrary';
+import { matchesQuery } from '../utils/trackSearch';
 
 /**
  * When the library sort is "playlist", composes the display list as
@@ -23,9 +24,7 @@ export function usePlaylistGrouping(library: ReturnType<typeof useLibrary>): Tra
     (async () => {
       try {
         const pls = await invoke<Playlist[]>('get_playlists');
-        const q = library.searchQuery.trim().toLowerCase();
-        const matches = (t: Track) =>
-          !q || [t.title, t.artist, t.album, t.genre].some((v) => v?.toLowerCase().includes(q));
+        const matches = (t: Track) => matchesQuery(t, library.searchQuery);
         const ordered = library.sortOrder === 'desc' ? [...pls].reverse() : pls;
         const inAnyPlaylist = new Set<number>();
         const composed: Track[] = [];
@@ -34,7 +33,7 @@ export function usePlaylistGrouping(library: ReturnType<typeof useLibrary>): Tra
           ts.forEach((t) => inAnyPlaylist.add(t.id));
           composed.push(...ts.filter(matches).map((t) => ({ ...t, playlist_label: pl.name })));
         }
-        // library.tracks is already search-filtered by the backend
+        // library.tracks is already search-filtered client-side by useLibrary
         composed.push(...library.tracks.filter((t) => !inAnyPlaylist.has(t.id)));
         if (!cancelled) setGrouped(composed);
       } catch (e) {
@@ -44,7 +43,9 @@ export function usePlaylistGrouping(library: ReturnType<typeof useLibrary>): Tra
     return () => {
       cancelled = true;
     };
-  }, [isPlaylistSort, library.tracks, library.sortOrder]);
+    // searchQuery is read inside the effect; it used to be omitted here and got
+    // away with it only because a search refetch replaced library.tracks.
+  }, [isPlaylistSort, library.tracks, library.sortOrder, library.searchQuery]);
 
   return isPlaylistSort ? grouped : library.tracks;
 }

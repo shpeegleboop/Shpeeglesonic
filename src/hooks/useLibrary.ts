@@ -1,6 +1,17 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { type Track } from '../stores/playerStore';
+import { listen } from '@tauri-apps/api/event';
+import { type Track, usePlayerStore } from '../stores/playerStore';
+import { matchesQuery } from '../utils/trackSearch';
+
+/** What `scan_folder` reports back. Mirrors scanner::ScanSummary. */
+export interface ScanSummary {
+  added: number;
+  updated: number;
+  skipped: number;
+  errors: number;
+  missing: string[];
+}
 
 // Global library state shared across all useLibrary() instances
 let _globalTracks: Track[] = [];
@@ -29,15 +40,24 @@ export function useLibrary() {
     return () => { _listeners.delete(listener); };
   }, []);
 
-  const fetchTracks = useCallback(async (sort?: string, order?: string, search?: string) => {
+  // Rust emits null when the scan ends, which clears the progress line.
+  useEffect(() => {
+    const unlisten = listen<{ done: number; total: number; label: string } | null>(
+      'scan-progress',
+      (e) => usePlayerStore.getState().setScanProgress(e.payload)
+    );
+    return () => { unlisten.then((f) => f()); };
+  }, []);
+
+  // Always fetches the COMPLETE library. Search is applied client-side, so
+  // _globalTracks must stay the unfiltered truth — every other consumer
+  // (sidebar, playlist counts, duplicates modal) reads the same global.
+  const fetchTracks = useCallback(async (sort?: string, order?: string) => {
     try {
-      const s = sort || sortBy;
-      const o = order || sortOrder;
-      const q = search !== undefined ? search : searchQuery;
       const result = await invoke<Track[]>('get_library_tracks', {
-        sortBy: s,
-        sortOrder: o,
-        search: q || null,
+        sortBy: sort || sortBy,
+        sortOrder: order || sortOrder,
+        search: null,
       });
       _globalTracks = result;
       setTracks(result);
@@ -45,7 +65,7 @@ export function useLibrary() {
     } catch (e) {
       console.error('Failed to fetch tracks:', e);
     }
-  }, [sortBy, sortOrder, searchQuery]);
+  }, [sortBy, sortOrder]);
 
   const fetchFolders = useCallback(async () => {
     try {
@@ -58,20 +78,29 @@ export function useLibrary() {
     }
   }, []);
 
-  const scanFolder = useCallback(async (path: string) => {
-    setLoading(true);
-    try {
-      const count = await invoke<number>('scan_folder', { path });
-      await fetchTracks();
-      await fetchFolders();
-      return count;
-    } catch (e) {
-      console.error('Scan failed:', e);
-      throw e;
-    } finally {
-      setLoading(false);
-    }
-  }, [fetchTracks, fetchFolders]);
+  const runScan = useCallback(
+    async (path: string, incremental: boolean) => {
+      setLoading(true);
+      try {
+        const summary = await invoke<ScanSummary>('scan_folder', { path, incremental });
+        await fetchTracks();
+        await fetchFolders();
+        return summary;
+      } catch (e) {
+        console.error('Scan failed:', e);
+        throw e;
+      } finally {
+        setLoading(false);
+        usePlayerStore.getState().setScanProgress(null);
+      }
+    },
+    [fetchTracks, fetchFolders]
+  );
+
+  /** Full rescan — re-reads every file's tags. */
+  const scanFolder = useCallback((path: string) => runScan(path, false), [runScan]);
+  /** Quick scan — skips files whose size and mtime are unchanged. */
+  const quickScan = useCallback((path: string) => runScan(path, true), [runScan]);
 
   const removeFolder = useCallback(async (path: string) => {
     try {
@@ -90,13 +119,22 @@ export function useLibrary() {
     fetchTracks(by, newOrder);
   }, [sortBy, sortOrder, fetchTracks]);
 
+  // Search is a pure view concern now: no IPC, no SQL, no debounce needed.
+  // The old implementation refetched on every keystroke, which at 4000 tracks
+  // meant a ~3s query plus ~2MB of JSON per character typed.
   const updateSearch = useCallback((query: string) => {
     setSearchQuery(query);
-    fetchTracks(sortBy, sortOrder, query);
-  }, [sortBy, sortOrder, fetchTracks]);
+  }, []);
+
+  const visibleTracks = useMemo(
+    () => (searchQuery.trim() ? tracks.filter((t) => matchesQuery(t, searchQuery)) : tracks),
+    [tracks, searchQuery]
+  );
 
   return {
-    tracks,
+    tracks: visibleTracks,
+    /** Unfiltered library — for consumers that must not see the search box's effect. */
+    allTracks: tracks,
     folders,
     loading,
     sortBy,
@@ -105,6 +143,7 @@ export function useLibrary() {
     fetchTracks,
     fetchFolders,
     scanFolder,
+    quickScan,
     removeFolder,
     updateSort,
     updateSearch,

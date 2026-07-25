@@ -93,15 +93,18 @@ pub fn get_playback_state(engine: State<'_, AudioEngineState>) -> Result<String,
 
 // ─── Library Commands ──────────────────────────────────────────────────
 
+/// Scan a library folder. `incremental` skips files whose size and mtime are
+/// unchanged; a full scan re-reads everything.
 #[command]
-pub fn scan_folder(path: String, db: State<'_, DbPool>, app_handle: tauri::AppHandle) -> Result<u32, String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
-
-    // Add to library folders
-    db::add_library_folder(&conn, &path)?;
+pub async fn scan_folder(
+    path: String,
+    incremental: bool,
+    db: State<'_, DbPool>,
+    app_handle: tauri::AppHandle,
+) -> Result<crate::library::scanner::ScanSummary, String> {
+    use tauri::{Emitter, Manager};
 
     // Art cache lives alongside the DB in Tauri's app data dir
-    use tauri::Manager;
     let art_cache_dir = app_handle
         .path()
         .app_data_dir()
@@ -110,12 +113,53 @@ pub fn scan_folder(path: String, db: State<'_, DbPool>, app_handle: tauri::AppHa
     std::fs::create_dir_all(&art_cache_dir)
         .map_err(|e| format!("Failed to create art cache: {}", e))?;
 
-    let count = crate::library::scanner::scan_folder(&conn, &path, &art_cache_dir)?;
+    let pool = db.inner().clone();
+    let emitter = app_handle.clone();
 
-    // Newly scanned files may be byte-identical to existing ones — collapse them
-    let _ = db::collapse_identical_duplicates(&conn);
+    // spawn_blocking so a long scan never occupies the async runtime — same
+    // pattern as play_file. The old sync command held the DB mutex for the
+    // entire scan, which is what froze the window.
+    tokio::task::spawn_blocking(move || {
+        {
+            let conn = pool.lock().map_err(|e| e.to_string())?;
+            db::add_library_folder(&conn, &path)?;
+        }
 
-    Ok(count)
+        let summary = crate::library::scanner::run_scan(
+            &pool,
+            &path,
+            &art_cache_dir,
+            incremental,
+            &|done, total, label| {
+                let _ = emitter.emit(
+                    "scan-progress",
+                    serde_json::json!({ "done": done, "total": total, "label": label }),
+                );
+            },
+        )?;
+
+        // Byte-comparing duplicate candidates reads whole files; pointless when
+        // the scan changed nothing.
+        if summary.added + summary.updated > 0 {
+            let conn = pool.lock().map_err(|e| e.to_string())?;
+            let _ = db::collapse_identical_duplicates(&conn);
+        }
+
+        let _ = emitter.emit("scan-progress", serde_json::Value::Null);
+        Ok(summary)
+    })
+    .await
+    .map_err(|e| format!("Task error: {}", e))?
+}
+
+/// Delete library rows for the exact paths handed in — the list the user was
+/// shown in the scan summary. Never recomputes the set at delete time, so a
+/// drive that came back online between the scan and the click can't cause a
+/// surprise deletion. Cascades to playlist entries and lyrics.
+#[command]
+pub fn prune_missing_tracks(paths: Vec<String>, db: State<'_, DbPool>) -> Result<u32, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    db::delete_tracks_by_path(&conn, &paths)
 }
 
 /// Hide byte-identical duplicate files, keeping one visible copy of each.

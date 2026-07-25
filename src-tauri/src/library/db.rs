@@ -79,6 +79,13 @@ const SCHEMA_SQL: &str = "
         CREATE INDEX IF NOT EXISTS idx_tracks_play_count ON tracks(play_count);
         CREATE INDEX IF NOT EXISTS idx_tracks_format ON tracks(format);
         CREATE INDEX IF NOT EXISTS idx_tracks_favorited ON tracks(favorited);
+
+        -- dup_flag's EXISTS probe (DUP_FLAG_SQL) matches on lower()-wrapped
+        -- title+artist. Without an index over those exact expressions the
+        -- subquery rescans the whole table per row — quadratic, and at 4000
+        -- tracks that was 2.85s on every library query.
+        CREATE INDEX IF NOT EXISTS idx_tracks_dup_probe
+            ON tracks(lower(COALESCE(title,'')), lower(COALESCE(artist,'')));
         ";
 
 /// Apply schema + migrations to an open connection.
@@ -94,6 +101,9 @@ fn apply_schema(conn: &Connection) -> Result<(), String> {
     // Migrations for older databases — ignore "duplicate column" errors
     let _ = conn.execute("ALTER TABLE tracks ADD COLUMN duplicate_of INTEGER", []);
     let _ = conn.execute("ALTER TABLE tracks ADD COLUMN dup_reviewed INTEGER DEFAULT 0", []);
+    // Added 2026-07-25 for incremental scanning. NULL on every pre-existing
+    // row; scanner::classify trusts a matching file_size and heals it.
+    let _ = conn.execute("ALTER TABLE tracks ADD COLUMN file_mtime INTEGER", []);
     let _ = conn.execute("ALTER TABLE playlists ADD COLUMN sort_order INTEGER", []);
     // Backfill manual order for pre-migration playlists (creation order)
     let _ = conn.execute("UPDATE playlists SET sort_order = id WHERE sort_order IS NULL", []);
@@ -121,13 +131,14 @@ pub fn upsert_track(conn: &Connection, meta: &TrackMetadata, art_path: Option<&s
         "INSERT INTO tracks (
             file_path, file_name, file_size, format, title, artist, album_artist,
             album, genre, year, track_number, disc_number, bpm, duration_seconds,
-            bitrate, sample_rate, bit_depth, channels, has_album_art, art_path
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
+            bitrate, sample_rate, bit_depth, channels, has_album_art, art_path,
+            file_mtime
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
         ON CONFLICT(file_path) DO UPDATE SET
             file_name=?2, file_size=?3, format=?4, title=?5, artist=?6, album_artist=?7,
             album=?8, genre=?9, year=?10, track_number=?11, disc_number=?12, bpm=?13,
             duration_seconds=?14, bitrate=?15, sample_rate=?16, bit_depth=?17, channels=?18,
-            has_album_art=?19, art_path=?20",
+            has_album_art=?19, art_path=?20, file_mtime=?21",
         params![
             meta.file_path,
             meta.file_name,
@@ -149,11 +160,60 @@ pub fn upsert_track(conn: &Connection, meta: &TrackMetadata, art_path: Option<&s
             meta.channels,
             meta.has_album_art as i32,
             art_path,
+            meta.file_mtime,
         ],
     )
     .map_err(|e| format!("Failed to upsert track: {}", e))?;
 
     Ok(conn.last_insert_rowid())
+}
+
+/// Everything the DB knows about files under `folder`, keyed by path — the
+/// `known` side of scanner::classify. One query instead of 4000.
+pub fn get_known_files(
+    conn: &Connection,
+    folder: &str,
+) -> Result<std::collections::HashMap<String, crate::library::scanner::KnownRow>, String> {
+    let mut stmt = conn
+        .prepare("SELECT file_path, file_size, file_mtime FROM tracks WHERE file_path LIKE ?1")
+        .map_err(|e| format!("Query error: {}", e))?;
+
+    // LIKE 'folder%' keeps the scan scoped, so a missing-file list can never
+    // include tracks from a library folder that wasn't scanned.
+    let pattern = format!("{}%", folder);
+    let rows = stmt
+        .query_map(params![pattern], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                crate::library::scanner::KnownRow { size: row.get(1)?, mtime: row.get(2)? },
+            ))
+        })
+        .map_err(|e| format!("Query error: {}", e))?;
+
+    Ok(rows.flatten().collect())
+}
+
+/// Backfills file_mtime for a file the scan verified as unchanged by size.
+pub fn set_file_mtime(conn: &Connection, path: &str, mtime: i64) -> Result<(), String> {
+    conn.execute(
+        "UPDATE tracks SET file_mtime = ?1 WHERE file_path = ?2",
+        params![mtime, path],
+    )
+    .map_err(|e| format!("Failed to set mtime: {}", e))?;
+    Ok(())
+}
+
+/// Remove tracks by exact file path. Returns how many rows went away.
+pub fn delete_tracks_by_path(conn: &Connection, paths: &[String]) -> Result<u32, String> {
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    let mut removed = 0u32;
+    for path in paths {
+        removed += tx
+            .execute("DELETE FROM tracks WHERE file_path = ?1", params![path])
+            .map_err(|e| format!("Failed to delete track: {}", e))? as u32;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(removed)
 }
 
 /// Track struct for sending to frontend.
@@ -904,6 +964,90 @@ mod tests {
 
         // Out-of-range indices are rejected
         assert!(reorder_playlist_track(&conn, pl, 0, 5).is_err());
+    }
+
+    /// Seeds `n` tracks with realistic field widths and a deliberate crop of
+    /// title+artist twins, so the dup_flag EXISTS probe has real work to do.
+    fn seed_tracks(conn: &Connection, n: usize) {
+        let tx = conn.unchecked_transaction().unwrap();
+        for i in 0..n {
+            tx.execute(
+                "INSERT INTO tracks (file_path, file_name, title, artist, album, genre,
+                                     year, duration_seconds, format, file_size)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![
+                    format!("D:\\Music\\artist{}\\album{}\\track{}.flac", i % 200, i % 400, i),
+                    format!("track{}.flac", i),
+                    // Wrapping the title below n leaves ~100 duplicate
+                    // title+artist pairs, so dup_flag's probe has real work.
+                    // saturating_sub keeps small-n callers from underflowing.
+                    format!(
+                        "Some Reasonably Long Track Title Number {}",
+                        i % n.saturating_sub(100).max(1)
+                    ),
+                    format!("Artist Name {}", i % 200),
+                    format!("Album Title {}", i % 400),
+                    "Electronic",
+                    2020,
+                    245.5_f64,
+                    "flac",
+                    41_000_000_i64 + i as i64,
+                ],
+            )
+            .unwrap();
+        }
+        tx.commit().unwrap();
+    }
+
+    #[test]
+    fn prune_deletes_only_the_given_paths() {
+        let conn = test_conn();
+        seed_tracks(&conn, 5);
+        let victim = "D:\\Music\\artist2\\album2\\track2.flac".to_string();
+
+        let removed = delete_tracks_by_path(&conn, &[victim.clone()]).unwrap();
+
+        assert_eq!(removed, 1);
+        let left = get_tracks(&conn, "title", "asc", None).unwrap();
+        assert_eq!(left.len(), 4);
+        assert!(!left.iter().any(|t| t.file_path == victim));
+    }
+
+    #[test]
+    fn known_files_are_scoped_to_the_folder() {
+        let conn = test_conn();
+        seed_tracks(&conn, 3);
+        conn.execute(
+            "INSERT INTO tracks (file_path, file_name) VALUES ('E:\\Other\\x.flac', 'x.flac')",
+            [],
+        )
+        .unwrap();
+
+        let known = get_known_files(&conn, "D:\\Music").unwrap();
+
+        assert_eq!(known.len(), 3, "a track outside the scanned folder leaked in");
+    }
+
+    /// The dup_flag badge is computed by a correlated subquery. Without an index
+    /// on its lower()-wrapped probe columns the cost is rows × table_size —
+    /// measured at 2.85s for 4000 tracks, which made search unusable. This test
+    /// fails if that index stops being used.
+    #[test]
+    fn library_query_stays_fast_at_scale() {
+        let conn = test_conn();
+        seed_tracks(&conn, 4000);
+
+        let started = std::time::Instant::now();
+        let tracks = get_tracks(&conn, "artist", "asc", None).unwrap();
+        let elapsed = started.elapsed();
+
+        assert_eq!(tracks.len(), 4000);
+        assert!(
+            elapsed < std::time::Duration::from_millis(500),
+            "get_tracks took {:?} for 4000 tracks — the idx_tracks_dup_probe \
+             expression index is missing or no longer matches DUP_FLAG_SQL",
+            elapsed
+        );
     }
 }
 

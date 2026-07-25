@@ -133,7 +133,8 @@ interface PlayerState {
 
   // Library
   libraryLoaded: boolean;
-  scanProgress: number | null;
+  /** Live scan progress, fed by the Rust `scan-progress` event. Not persisted. */
+  scanProgress: { done: number; total: number; label: string } | null;
 
   // Visualizer
   visualizerMode: VisualizerType;
@@ -187,6 +188,7 @@ interface PlayerState {
   updateVisualizerSettings: (settings: Partial<PlayerState['visualizerSettings']>) => void;
   setPlaybackError: (error: string | null) => void;
   setSelectedPlaylistId: (id: number | null) => void;
+  setScanProgress: (p: PlayerState['scanProgress']) => void;
 }
 
 export const usePlayerStore = create<PlayerState>()(
@@ -423,6 +425,7 @@ export const usePlayerStore = create<PlayerState>()(
     })),
   setPlaybackError: (error) => set({ playbackError: error }),
   setSelectedPlaylistId: (id) => set({ selectedPlaylistId: id }),
+  setScanProgress: (p) => set({ scanProgress: p }),
     }),
     {
       name: PERSIST_KEY,
