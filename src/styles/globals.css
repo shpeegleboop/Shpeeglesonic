@@ -70,20 +70,27 @@ body {
   background: transparent;
 }
 
-/* Scrollbar styling */
+/* Scrollbar styling — sized for lists of thousands of tracks. The thumb's
+   min-height matters more than the width: thumb size is proportional to
+   content, so at 5,000 rows it degenerates to a few pixels without a floor. */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 13px;
+  height: 13px;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: var(--border);
-  border-radius: 3px;
+  background: #4a4a6e;
+  border-radius: 7px;
+  min-height: 40px;
+  /* Inset the thumb so it reads as a slim pill in a wide, easy-to-hit target. */
+  border: 3px solid transparent;
+  background-clip: content-box;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #3a3a58;
+  background: #6b6b9e;
+  background-clip: content-box;
 }
 
 /* Glassmorphism panel */
