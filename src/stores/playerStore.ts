@@ -116,8 +116,10 @@ export type VisualizerType =
 
 export const VISUALIZER_MODES: { id: VisualizerType; label: string }[] = [
   { id: 'spectrogram', label: 'Bars' },
-  { id: 'spiral', label: 'Spiral' },
-  { id: 'rotator', label: 'Rotating Spiral' },
+  // Display names only — the ids stay 'spiral'/'rotator' so no persisted
+  // visualizerMode needs migrating.
+  { id: 'spiral', label: 'Orbitals' },
+  { id: 'rotator', label: 'Vortex' },
   { id: 'mandelbrot', label: 'Mandelbrot' },
   { id: 'buddhabrot', label: 'Buddhabrot' },
   { id: 'fireworks', label: 'Fireworks' },
