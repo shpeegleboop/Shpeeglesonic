@@ -36,6 +36,21 @@ describe('startTrackDrag / readTrackDrag', () => {
     expect(readTrackDrag(dt)).toEqual({ trackIds: [3, 1, 2], label: 'OK Computer' });
   });
 
+  // A dragged playlist lists no ids — dragstart cannot await, so the contents
+  // are fetched at drop time. The playlist id alone has to be enough.
+  it('accepts a playlist payload with no ids', () => {
+    const dt = stubDT();
+    startTrackDrag(dt, { trackIds: [], label: 'Late Night', playlistId: 7 });
+    expect(readTrackDrag(dt)).toEqual({ trackIds: [], label: 'Late Night', playlistId: 7 });
+  });
+
+  // Otherwise a drop on the queue would silently do nothing for one of the two.
+  it('keeps ids and playlistId apart', () => {
+    const dt = stubDT();
+    startTrackDrag(dt, { trackIds: [5, 6], label: 'two tracks' });
+    expect(readTrackDrag(dt)?.playlistId).toBeUndefined();
+  });
+
   // Some engines refuse a drag whose dataTransfer carries nothing.
   it('always writes text/plain as well', () => {
     const dt = stubDT();

@@ -7,6 +7,9 @@ export interface TrackDragPayload {
   /** "OK Computer", or a track title. Written to text/plain for a
    *  human-readable representation; no drop target reads it back. */
   label: string;
+  /** Set when a whole playlist is dragged. Its contents are fetched at drop
+   *  time rather than listed here, because dragstart cannot await. */
+  playlistId?: number;
 }
 
 /**
@@ -48,10 +51,19 @@ export function readTrackDrag(dt: DragLike): TrackDragPayload | null {
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as Partial<TrackDragPayload>;
-    if (!parsed || !Array.isArray(parsed.trackIds)) return null;
-    const trackIds = parsed.trackIds.filter((n): n is number => typeof n === 'number');
-    if (trackIds.length === 0) return null;
-    return { trackIds, label: typeof parsed.label === 'string' ? parsed.label : '' };
+    if (!parsed) return null;
+    const trackIds = Array.isArray(parsed.trackIds)
+      ? parsed.trackIds.filter((n): n is number => typeof n === 'number')
+      : [];
+    const playlistId = typeof parsed.playlistId === 'number' ? parsed.playlistId : undefined;
+    // A playlist drag carries no ids — its contents are fetched at drop time —
+    // so either is enough to make the payload meaningful.
+    if (trackIds.length === 0 && playlistId === undefined) return null;
+    return {
+      trackIds,
+      label: typeof parsed.label === 'string' ? parsed.label : '',
+      ...(playlistId !== undefined ? { playlistId } : {}),
+    };
   } catch {
     return null;
   }

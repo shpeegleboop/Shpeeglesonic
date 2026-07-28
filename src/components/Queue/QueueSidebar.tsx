@@ -7,8 +7,9 @@ import { QueueIcon, CloseIcon, TrashIcon, PlayIcon, PauseIcon } from '../Icons';
 import { TrackContextMenu } from '../Library/TrackContextMenu';
 import { MetadataEditModal } from '../Library/MetadataEditModal';
 import { ConfirmDialog } from '../ConfirmDialog';
-import { isTrackDrag, readTrackDrag, resolveTracks } from '../../utils/trackDrag';
-import { getGlobalTracks } from '../../hooks/useLibrary';
+import { isTrackDrag } from '../../utils/trackDrag';
+import { tracksForDrop } from '../../utils/dropTracks';
+
 
 export function QueueSidebar() {
   const [contextMenu, setContextMenu] = useState<{ track: Track; x: number; y: number } | null>(null);
@@ -18,13 +19,13 @@ export function QueueSidebar() {
   const [dropTarget, setDropTarget] = useState<number | null>(null);
   const [trackDropAt, setTrackDropAt] = useState<number | null>(null);
 
-  const dropTracksAt = (e: React.DragEvent, index: number) => {
+  const dropTracksAt = async (e: React.DragEvent, index: number) => {
     e.preventDefault();
     e.stopPropagation();
     setTrackDropAt(null);
-    const payload = readTrackDrag(e.dataTransfer);
-    if (!payload) return;
-    const dropped = resolveTracks(payload.trackIds, getGlobalTracks());
+    // Reads the payload synchronously before any await — getData() is only
+    // valid during the event.
+    const dropped = await tracksForDrop(e.dataTransfer);
     if (dropped.length) usePlayerStore.getState().insertIntoQueue(dropped, index);
   };
   const queue = usePlayerStore((s) => s.queue);
@@ -114,7 +115,7 @@ export function QueueSidebar() {
             if (!isTrackDrag(e.dataTransfer)) return;
             // Rows call stopPropagation, so reaching here means empty space
             // below the last row — append rather than doing nothing.
-            dropTracksAt(e, usePlayerStore.getState().queue.length);
+            void dropTracksAt(e, usePlayerStore.getState().queue.length);
           }}
         >
           <div
@@ -167,7 +168,7 @@ export function QueueSidebar() {
                   onDragLeave={() => setTrackDropAt(null)}
                   onDrop={(e) => {
                     if (isTrackDrag(e.dataTransfer)) {
-                      dropTracksAt(e, item.index);
+                      void dropTracksAt(e, item.index);
                       return;
                     }
                     e.preventDefault();

@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import { usePlayerStore } from '../../stores/playerStore';
 import { useAudioPlayer } from '../../hooks/useAudioPlayer';
-import { isTrackDrag, readTrackDrag, resolveTracks, playNextOrder } from '../../utils/trackDrag';
-import { getGlobalTracks } from '../../hooks/useLibrary';
+import { isTrackDrag, playNextOrder } from '../../utils/trackDrag';
+import { tracksForDrop } from '../../utils/dropTracks';
 import { formatDuration, trackDisplayTitle, trackDisplayArtist } from '../../utils/formatters';
 import { AlbumArt } from '../Player/AlbumArt';
 import {
@@ -33,12 +33,11 @@ export function BottomBar() {
   const repeatMode = usePlayerStore((s) => s.repeatMode);
   const [dropActive, setDropActive] = useState(false);
 
-  const dropPlayNext = (e: React.DragEvent) => {
+  const dropPlayNext = async (e: React.DragEvent) => {
     e.preventDefault();
     setDropActive(false);
-    const payload = readTrackDrag(e.dataTransfer);
-    if (!payload) return;
-    const dropped = resolveTracks(payload.trackIds, getGlobalTracks());
+    // A dragged playlist has its contents fetched here, so this awaits.
+    const dropped = await tracksForDrop(e.dataTransfer);
     // Each playNext inserts directly after the current track, so applying the
     // list in order would play a dropped album backwards.
     for (const t of playNextOrder(dropped)) {
@@ -65,7 +64,7 @@ export function BottomBar() {
         setDropActive(true);
       }}
       onDragLeave={() => setDropActive(false)}
-      onDrop={dropPlayNext}
+      onDrop={(e) => void dropPlayNext(e)}
     >
       {/* Progress bar (full width at top — tall hit area, thin visual bar) */}
       <div

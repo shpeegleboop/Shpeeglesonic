@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { usePlayerStore, FAVORITES_PLAYLIST_ID } from '../../stores/playerStore';
 import { usePlaylist, type Playlist } from '../../hooks/usePlaylist';
-import { useLibrary, getGlobalTracks } from '../../hooks/useLibrary';
+import { useLibrary } from '../../hooks/useLibrary';
 import { invoke } from '@tauri-apps/api/core';
-import { isTrackDrag, readTrackDrag, resolveTracks } from '../../utils/trackDrag';
+import { isTrackDrag, startTrackDrag } from '../../utils/trackDrag';
+import { tracksForDrop } from '../../utils/dropTracks';
 import { PlusIcon, TrashIcon, HeartFilledIcon } from '../Icons';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { PlaylistContextMenu } from './PlaylistContextMenu';
@@ -31,16 +32,11 @@ export function PlaylistSidebar() {
   // which belongs to playlist reordering and is an index into `playlists`.
   const [trackDropTarget, setTrackDropTarget] = useState<number | null>(null);
 
-  const tracksFromDrag = (e: React.DragEvent) => {
-    const payload = readTrackDrag(e.dataTransfer);
-    return payload ? resolveTracks(payload.trackIds, getGlobalTracks()) : [];
-  };
-
   const dropOnPlaylist = async (e: React.DragEvent, playlistId: number) => {
     e.preventDefault();
     e.stopPropagation();
     setTrackDropTarget(null);
-    const dropped = tracksFromDrag(e);
+    const dropped = await tracksForDrop(e.dataTransfer);
     // Sequential: add_track_to_playlist appends at MAX(position)+1, so
     // concurrent calls would race for the same position.
     for (const t of dropped) {
@@ -60,7 +56,7 @@ export function PlaylistSidebar() {
     setTrackDropTarget(null);
     // toggle_favorite is the only command, so a blanket toggle would
     // UNfavorite the tracks in a dropped album that were already favorited.
-    const toAdd = tracksFromDrag(e).filter((t) => !t.favorited);
+    const toAdd = (await tracksForDrop(e.dataTransfer)).filter((t) => !t.favorited);
     for (const t of toAdd) {
       try {
         await invoke('toggle_favorite', { trackId: t.id });
@@ -197,32 +193,45 @@ export function PlaylistSidebar() {
             draggable
             onDragStart={(e) => {
               dragFromRef.current = pi;
-              e.dataTransfer.effectAllowed = 'move';
-              e.dataTransfer.setData('text/plain', String(pi));
+              // Carries a track payload too, so a playlist can be dropped on
+              // the queue or the player bar. Its contents are fetched at drop
+              // time — dragstart cannot await.
+              startTrackDrag(e.dataTransfer, {
+                trackIds: [],
+                label: pl.name,
+                playlistId: pl.id,
+              });
             }}
             onDragOver={(e) => {
+              // Reorder wins when the drag started on a playlist row. Playlist
+              // rows now carry a track payload as well, so testing the payload
+              // first would turn every reorder into an add.
+              if (dragFromRef.current !== null) {
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'move';
+                if (dropTarget !== pi) setDropTarget(pi);
+                return;
+              }
               if (isTrackDrag(e.dataTransfer)) {
                 e.preventDefault();
                 e.dataTransfer.dropEffect = 'copy';
                 setTrackDropTarget(pl.id);
-                return;
               }
-              e.preventDefault();
-              e.dataTransfer.dropEffect = 'move';
-              if (dropTarget !== pi) setDropTarget(pi);
             }}
             onDragLeave={() => setTrackDropTarget(null)}
             onDrop={(e) => {
-              if (isTrackDrag(e.dataTransfer)) {
-                void dropOnPlaylist(e, pl.id);
+              if (dragFromRef.current !== null) {
+                e.preventDefault();
+                if (dragFromRef.current !== pi) {
+                  reorderPlaylists(dragFromRef.current, pi);
+                }
+                dragFromRef.current = null;
+                setDropTarget(null);
                 return;
               }
-              e.preventDefault();
-              if (dragFromRef.current !== null && dragFromRef.current !== pi) {
-                reorderPlaylists(dragFromRef.current, pi);
+              if (isTrackDrag(e.dataTransfer)) {
+                void dropOnPlaylist(e, pl.id);
               }
-              dragFromRef.current = null;
-              setDropTarget(null);
             }}
             onDragEnd={() => {
               dragFromRef.current = null;

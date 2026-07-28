@@ -76,7 +76,14 @@ body {
    element actually wins the hit test kept its own cursor otherwise. */
 html.hide-cursor,
 html.hide-cursor * {
-  cursor: none !important;
+  /* A transparent 1x1 image rather than `none`. Asking for no cursor left it
+     visible over anything interactive: the webview re-asserts a cursor for
+     whichever element is under the pointer, and that undid both the CSS and
+     the window-level hide. Handing it an invisible image means whatever it
+     asserts is invisible anyway. `none` stays as the fallback. */
+  cursor: url("data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7")
+      0 0,
+    none !important;
 }
 
 /* Scrollbar styling — sized for lists of thousands of tracks. The thumb's
