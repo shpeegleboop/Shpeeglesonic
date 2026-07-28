@@ -60,22 +60,34 @@ export function VisualizerContainer({ inline }: VisualizerContainerProps) {
   const quality = usePlayerStore((s) => s.visualizerSettings.quality);
   const { fftRef, lastUpdateRef } = useFFTData();
 
-  useEffect(() => {
-    const el = containerRef.current;
+  // A callback ref, not a mount-time effect: containerRef points at a
+  // different DOM node in each branch (windowed, fullscreen overlay, dormant),
+  // so toggling fullscreen remounts the div. With an effect keyed on [] the
+  // observer stayed attached to the old, detached node and `size` never
+  // updated again — leaving the canvas at the wrong internal resolution and
+  // the picture soft.
+  const observerRef = useRef<ResizeObserver | null>(null);
+  const measureRef = (el: HTMLDivElement | null) => {
+    containerRef.current = el;
+    observerRef.current?.disconnect();
     if (!el) return;
-
-    const observer = new ResizeObserver((entries) => {
+    const ro = new ResizeObserver((entries) => {
       for (const entry of entries) {
         const { width, height } = entry.contentRect;
         if (width > 0 && height > 0) {
-          setSize({ width: Math.floor(width), height: Math.floor(height) });
+          setSize((prev) => {
+            const w = Math.floor(width);
+            const h = Math.floor(height);
+            return prev.width === w && prev.height === h ? prev : { width: w, height: h };
+          });
         }
       }
     });
+    ro.observe(el);
+    observerRef.current = ro;
+  };
 
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, []);
+  useEffect(() => () => observerRef.current?.disconnect(), []);
 
   const renderVisualizer = () => {
     // Canvas visualizers render at a quality-scaled internal resolution and
@@ -124,12 +136,21 @@ export function VisualizerContainer({ inline }: VisualizerContainerProps) {
   if (fullscreen && !inline) {
     return (
       <div
-        className={`fixed inset-0 z-50 bg-cosmic-bg ${idle ? 'cursor-none' : 'cursor-pointer'}`}
+        className="fixed inset-0 z-50 bg-cosmic-bg"
+        style={{ cursor: idle ? 'none' : 'pointer' }}
         onClick={() => usePlayerStore.getState().setVisualizerFullscreen(false)}
       >
-        <div ref={containerRef} className="w-full h-full">
+        <div ref={measureRef} className="w-full h-full">
           {renderVisualizer()}
         </div>
+
+        {/* Browsers only re-evaluate the cursor image on a pointer event, so
+            restyling the overlay while the mouse sits perfectly still — the
+            exact case that makes us idle — leaves the old cursor on screen.
+            Mounting a fresh element under the pointer changes the hit target
+            and forces the recompute. Clicks still bubble to the overlay, so
+            click-to-exit is unaffected. */}
+        {idle && <div className="absolute inset-0 z-40" style={{ cursor: 'none' }} />}
 
         <VisualizerQuickSettings hidden={idle} />
 
@@ -159,7 +180,7 @@ export function VisualizerContainer({ inline }: VisualizerContainerProps) {
 
   return (
     <div className="w-full h-full relative">
-      <div ref={containerRef} className="w-full h-full bg-cosmic-bg rounded-lg overflow-hidden">
+      <div ref={measureRef} className="w-full h-full bg-cosmic-bg rounded-lg overflow-hidden">
         {renderVisualizer()}
       </div>
       <VisualizerQuickSettings />
