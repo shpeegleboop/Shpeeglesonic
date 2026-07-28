@@ -15,6 +15,15 @@ export interface ScanSummary {
 
 // Global library state shared across all useLibrary() instances
 let _globalTracks: Track[] = [];
+
+/**
+ * The unfiltered library, for consumers outside React's render cycle — drop
+ * handlers resolving dragged track ids. A dragged track may not be in whatever
+ * the current search shows, so this must never be the filtered list.
+ */
+export function getGlobalTracks(): Track[] {
+  return _globalTracks;
+}
 let _globalFolders: string[] = [];
 let _listeners: Set<() => void> = new Set();
 

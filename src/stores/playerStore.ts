@@ -195,6 +195,7 @@ interface PlayerState {
   addToQueue: (track: Track) => void;
   playNext: (track: Track) => void;
   reorderQueue: (from: number, to: number) => void;
+  insertIntoQueue: (tracks: Track[], index: number) => void;
   removeFromQueue: (index: number) => void;
   clearQueue: () => void;
   nextTrack: () => Track | null;
@@ -355,6 +356,32 @@ export const usePlayerStore = create<PlayerState>()(
         : -1;
       newOriginal.splice(oi >= 0 ? oi + 1 : newOriginal.length, 0, track);
       return { queue: newQueue, originalQueue: newOriginal };
+    }),
+
+  insertIntoQueue: (tracks, index) =>
+    set((s) => {
+      if (tracks.length === 0) return {};
+      const at = Math.max(0, Math.min(index, s.queue.length));
+
+      const queue = [...s.queue];
+      queue.splice(at, 0, ...tracks);
+
+      // Mirror into originalQueue, anchored on whatever track currently sits at
+      // the insert point — otherwise toggling shuffle off restores the
+      // pre-insert snapshot and silently drops everything just added. Same rule
+      // playNext follows.
+      const anchor = s.queue[at];
+      const originalQueue = [...s.originalQueue];
+      const oi = anchor
+        ? originalQueue.findIndex((t) => t.id === anchor.id && t.file_path === anchor.file_path)
+        : -1;
+      originalQueue.splice(oi >= 0 ? oi : originalQueue.length, 0, ...tracks);
+
+      // Inserting at or above the playing position would otherwise shift what
+      // is playing out from under queueIndex.
+      const queueIndex = at <= s.queueIndex ? s.queueIndex + tracks.length : s.queueIndex;
+
+      return { queue, originalQueue, queueIndex };
     }),
 
   reorderQueue: (from, to) =>
