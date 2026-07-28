@@ -97,9 +97,8 @@ impl AudioEngine {
         self.track_ended_naturally.store(false, Ordering::Relaxed);
         self.stop_internal();
 
-        // Instant probe — reads file header only, no decoding
-        let (file_sr, file_ch, duration, bit_depth, bitrate) =
-            super::decoder::probe_file_info(path)?;
+        // One decision, shared by probe and decode. Reads the file header only.
+        let (backend, probe) = super::decoder::choose_backend(path)?;
 
         let format = std::path::Path::new(path)
             .extension()
@@ -109,16 +108,22 @@ impl AudioEngine {
 
         let track_info = TrackInfo {
             file_path: path.to_string(),
-            duration_seconds: duration,
-            sample_rate: file_sr,
-            channels: file_ch,
+            duration_seconds: probe.duration_seconds,
+            // The file's native rate — 2822400 for DSD64, not the device rate.
+            sample_rate: probe.sample_rate,
+            channels: probe.channels,
             format,
-            bit_depth,
-            bitrate,
+            bit_depth: probe.bit_depth,
+            bitrate: probe.bitrate,
         };
         self.current_track = Some(track_info.clone());
 
-        let needs_resample = file_sr != self.device_sample_rate;
+        let file_sr = probe.sample_rate;
+        let file_ch = probe.channels;
+        // ffmpeg emits at the device rate already, so resampling only ever
+        // applies to the symphonia branch.
+        let needs_resample = backend == super::decoder::Backend::Symphonia
+            && file_sr != self.device_sample_rate;
 
         // Ring buffer: ~100ms of audio (tight sync with visuals)
         let ch = self.device_channels as usize;
@@ -160,23 +165,8 @@ impl AudioEngine {
         let app_handle = self.app_handle.clone();
         let seek_flush = self.seek_flush.clone();
 
-        // Check if Symphonia can handle this codec, otherwise use ffmpeg fallback
-        let symphonia_err = super::decoder::open_for_streaming(path).err();
-        let use_ffmpeg = if symphonia_err.is_some() {
-            if super::ffmpeg::is_available() {
-                true
-            } else {
-                return Err(format!(
-                    "Unsupported codec (install ffmpeg for ALAC/M4A support): {}",
-                    symphonia_err.unwrap()
-                ));
-            }
-        } else {
-            false
-        };
-
         let handle = std::thread::spawn(move || {
-            if use_ffmpeg {
+            if backend == super::decoder::Backend::Ffmpeg {
                 println!("Using ffmpeg fallback for: {}", path_owned);
                 decode_thread_ffmpeg(
                     &path_owned,
@@ -227,7 +217,10 @@ impl AudioEngine {
         self.decode_handle = Some(handle);
 
         self.playback_state.store(STATE_PLAYING, Ordering::Relaxed);
-        println!("Playback started (duration: {:.1}s)", duration);
+        println!(
+            "Playback started (duration: {:.1}s)",
+            probe.duration_seconds
+        );
 
         Ok(track_info)
     }
@@ -313,7 +306,7 @@ fn decode_thread_streaming(
     seek_flush: Arc<AtomicBool>,
     volume: Arc<AtomicU8>,
 ) {
-    let (mut format_reader, mut decoder, track_id, _sr, _ch) =
+    let (mut format_reader, mut decoder, track_id, _info) =
         match super::decoder::open_for_streaming(path) {
             Ok(v) => v,
             Err(e) => {
@@ -442,7 +435,7 @@ fn decode_thread_resampling(
 ) {
     println!("Streaming resample {}Hz → {}Hz", file_sr, device_sr);
 
-    let (mut format_reader, mut decoder, track_id, _sr, _ch) =
+    let (mut format_reader, mut decoder, track_id, _info) =
         match super::decoder::open_for_streaming(path) {
             Ok(v) => v,
             Err(e) => {
