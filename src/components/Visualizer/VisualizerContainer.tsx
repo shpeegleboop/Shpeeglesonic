@@ -29,15 +29,38 @@ export function VisualizerContainer({ inline }: VisualizerContainerProps) {
   const [idle, setIdle] = useState(false);
   const idleRef = useRef(false);
 
-  // Applied to <html> rather than the overlay: a cursor rule on the overlay
-  // only reached some visualizers, since whichever element won the hit test
-  // kept its own cursor. Always cleared on exit — a stuck class would leave the
-  // whole app without a pointer.
+  // Hidden at the OS level, not just in CSS.
+  //
+  // Two CSS attempts each worked on a different, shifting subset of
+  // visualizers — which means the mode was never the variable. Browsers only
+  // re-evaluate the cursor on a pointer event, and stillness is exactly what
+  // triggers the hide, so whether a CSS change ever took effect came down to
+  // whether something happened to force a hit-test refresh. setCursorVisible
+  // goes through the window itself and does not depend on that at all.
+  //
+  // The CSS class stays as a fallback for the case where the permission is
+  // unavailable. Both are cleared on exit and on unmount — a cursor left
+  // hidden would make the whole app unusable.
   useEffect(() => {
     const root = document.documentElement;
-    if (fullscreen && idle) root.classList.add('hide-cursor');
+    const hide = fullscreen && idle;
+    if (hide) root.classList.add('hide-cursor');
     else root.classList.remove('hide-cursor');
-    return () => root.classList.remove('hide-cursor');
+
+    let cancelled = false;
+    import('@tauri-apps/api/window')
+      .then(({ getCurrentWindow }) => {
+        if (!cancelled) getCurrentWindow().setCursorVisible(!hide).catch(() => {});
+      })
+      .catch(() => {});
+
+    return () => {
+      cancelled = true;
+      root.classList.remove('hide-cursor');
+      import('@tauri-apps/api/window')
+        .then(({ getCurrentWindow }) => getCurrentWindow().setCursorVisible(true).catch(() => {}))
+        .catch(() => {});
+    };
   }, [fullscreen, idle]);
 
   useEffect(() => {
