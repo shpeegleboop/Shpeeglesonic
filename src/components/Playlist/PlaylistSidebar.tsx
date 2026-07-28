@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { usePlayerStore, FAVORITES_PLAYLIST_ID } from '../../stores/playerStore';
 import { usePlaylist, type Playlist } from '../../hooks/usePlaylist';
-import { useLibrary } from '../../hooks/useLibrary';
+import { useLibrary, getGlobalTracks } from '../../hooks/useLibrary';
+import { invoke } from '@tauri-apps/api/core';
+import { isTrackDrag, readTrackDrag, resolveTracks } from '../../utils/trackDrag';
 import { PlusIcon, TrashIcon, HeartFilledIcon } from '../Icons';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { PlaylistContextMenu } from './PlaylistContextMenu';
@@ -9,8 +11,8 @@ import { PlaylistContextMenu } from './PlaylistContextMenu';
 export function PlaylistSidebar() {
   const selectedPlaylistId = usePlayerStore((s) => s.selectedPlaylistId);
   const setSelectedPlaylistId = usePlayerStore((s) => s.setSelectedPlaylistId);
-  const { playlists, fetchPlaylists, createPlaylist, renamePlaylist, reorderPlaylists, deletePlaylist } = usePlaylist();
-  const { tracks } = useLibrary();
+  const { playlists, fetchPlaylists, createPlaylist, renamePlaylist, reorderPlaylists, deletePlaylist, addTrackToPlaylist } = usePlaylist();
+  const { tracks, fetchTracks } = useLibrary();
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState('');
   const [deleting, setDeleting] = useState<Playlist | null>(null);
@@ -19,6 +21,52 @@ export function PlaylistSidebar() {
   const [menu, setMenu] = useState<{ pl: Playlist; x: number; y: number } | null>(null);
   const dragFromRef = useRef<number | null>(null);
   const [dropTarget, setDropTarget] = useState<number | null>(null);
+
+  // Highlights the row a track drag is hovering. Separate from dropTarget,
+  // which belongs to playlist reordering and is an index into `playlists`.
+  const [trackDropTarget, setTrackDropTarget] = useState<number | null>(null);
+
+  const tracksFromDrag = (e: React.DragEvent) => {
+    const payload = readTrackDrag(e.dataTransfer);
+    return payload ? resolveTracks(payload.trackIds, getGlobalTracks()) : [];
+  };
+
+  const dropOnPlaylist = async (e: React.DragEvent, playlistId: number) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setTrackDropTarget(null);
+    const dropped = tracksFromDrag(e);
+    // Sequential: add_track_to_playlist appends at MAX(position)+1, so
+    // concurrent calls would race for the same position.
+    for (const t of dropped) {
+      try {
+        await addTrackToPlaylist(playlistId, t.id);
+      } catch (err) {
+        // A partial add beats dropping the good tracks too.
+        console.error('Failed to add track to playlist:', err);
+      }
+    }
+    await fetchPlaylists();
+  };
+
+  const dropOnFavorites = async (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setTrackDropTarget(null);
+    // toggle_favorite is the only command, so a blanket toggle would
+    // UNfavorite the tracks in a dropped album that were already favorited.
+    const toAdd = tracksFromDrag(e).filter((t) => !t.favorited);
+    for (const t of toAdd) {
+      try {
+        await invoke('toggle_favorite', { trackId: t.id });
+      } catch (err) {
+        console.error('Failed to favorite track:', err);
+      }
+    }
+    // Favorites is a virtual playlist filtered client-side; without this the
+    // view does not update.
+    await fetchTracks();
+  };
 
   useEffect(() => {
     fetchPlaylists();
@@ -74,8 +122,16 @@ export function PlaylistSidebar() {
             selectedPlaylistId === FAVORITES_PLAYLIST_ID
               ? 'bg-neon-purple/15 text-neon-purple border-l-2 border-l-neon-purple'
               : 'text-gray-300 hover:bg-cosmic-hover hover:text-white'
-          }`}
+          } ${trackDropTarget === FAVORITES_PLAYLIST_ID ? 'ring-1 ring-neon-purple bg-neon-purple/10' : ''}`}
           onClick={() => setSelectedPlaylistId(FAVORITES_PLAYLIST_ID)}
+          onDragOver={(e) => {
+            if (!isTrackDrag(e.dataTransfer)) return;
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'copy';
+            setTrackDropTarget(FAVORITES_PLAYLIST_ID);
+          }}
+          onDragLeave={() => setTrackDropTarget(null)}
+          onDrop={dropOnFavorites}
         >
           <div className="flex items-center gap-1.5">
             <span className="text-neon-pink">
@@ -115,7 +171,7 @@ export function PlaylistSidebar() {
               selectedPlaylistId === pl.id
                 ? 'bg-neon-purple/15 text-neon-purple border-l-2 border-l-neon-purple'
                 : 'text-gray-300 hover:bg-cosmic-hover hover:text-white'
-            }`}
+            } ${trackDropTarget === pl.id ? 'ring-1 ring-neon-purple bg-neon-purple/10' : ''}`}
             onClick={() => setSelectedPlaylistId(pl.id)}
             onContextMenu={(e) => {
               e.preventDefault();
@@ -128,11 +184,22 @@ export function PlaylistSidebar() {
               e.dataTransfer.setData('text/plain', String(pi));
             }}
             onDragOver={(e) => {
+              if (isTrackDrag(e.dataTransfer)) {
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'copy';
+                setTrackDropTarget(pl.id);
+                return;
+              }
               e.preventDefault();
               e.dataTransfer.dropEffect = 'move';
               if (dropTarget !== pi) setDropTarget(pi);
             }}
+            onDragLeave={() => setTrackDropTarget(null)}
             onDrop={(e) => {
+              if (isTrackDrag(e.dataTransfer)) {
+                void dropOnPlaylist(e, pl.id);
+                return;
+              }
               e.preventDefault();
               if (dragFromRef.current !== null && dragFromRef.current !== pi) {
                 reorderPlaylists(dragFromRef.current, pi);
