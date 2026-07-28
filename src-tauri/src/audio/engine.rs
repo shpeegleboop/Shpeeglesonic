@@ -281,13 +281,6 @@ impl AudioEngine {
         self.volume.store(vol.min(100), Ordering::Relaxed);
     }
 
-    pub fn get_position_seconds(&self) -> f64 {
-        let samples = self.samples_played.load(Ordering::Relaxed);
-        if self.device_channels == 0 || self.device_sample_rate == 0 {
-            return 0.0;
-        }
-        samples as f64 / (self.device_sample_rate as f64 * self.device_channels as f64)
-    }
 }
 
 /// Streaming decode thread — reads packets one at a time from the file.
@@ -754,15 +747,6 @@ fn push_to_ringbuf(
 
         pos += pushed;
     }
-}
-
-fn mono_to_stereo(mono: &[f32]) -> Vec<f32> {
-    let mut stereo = Vec::with_capacity(mono.len() * 2);
-    for &sample in mono {
-        stereo.push(sample);
-        stereo.push(sample);
-    }
-    stereo
 }
 
 /// Emit a playback-error event to the frontend so the user sees a toast.

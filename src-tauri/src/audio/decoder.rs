@@ -8,6 +8,11 @@ use symphonia::core::probe::Hint;
 use crate::audio::ffmpeg::{self, ProbeInfo};
 
 /// Decoded audio data: interleaved f32 samples, sample rate, and channel count.
+///
+/// Test-only. Playback streams through `decode_thread*` in engine.rs and never
+/// decodes a whole file into memory; this exists so the codec tests can assert
+/// on actual sample counts.
+#[cfg(test)]
 pub struct DecodedAudio {
     pub samples: Vec<f32>,
     pub sample_rate: u32,
@@ -129,8 +134,8 @@ pub fn choose_backend(path: &str) -> Result<(Backend, ProbeInfo), String> {
     })
 }
 
-/// Decode an audio file at the given path into interleaved f32 PCM samples.
-/// Used as fallback when resampling is needed.
+/// Decode a whole file into interleaved f32 PCM. Test-only — see `DecodedAudio`.
+#[cfg(test)]
 pub fn decode_file(path: &str) -> Result<DecodedAudio, String> {
     let (mut format_reader, mut decoder, track_id, info) = open_for_streaming(path)?;
     let (sample_rate, channels) = (info.sample_rate, info.channels);
