@@ -96,9 +96,15 @@ export function CombinedVisualizer({ fftRef, lastUpdateRef, width, height }: Com
         const v = smooth[i];
         if (v < 0.01) continue;
 
-        const angle = (i / numBars) * Math.PI * 2 - Math.PI / 2 + rotation;
-        const barLen = v * maxR * 0.52;
-        const hue = (hueBase + (i / numBars) * 300) % 360;
+        const frac = i / numBars; // 0 = bass, 1 = air
+        const angle = frac * Math.PI * 2 - Math.PI / 2 + rotation;
+        // Low bins carry far more raw magnitude than the rest of the spectrum,
+        // so at a flat scale a heavy kick threw bass bars most of the way to
+        // the canvas edge and swamped everything else. Taper the low end rather
+        // than shortening every bar.
+        const lowTaper = 0.3 + 0.7 * Math.min(1, frac / 0.45);
+        const barLen = v * maxR * 0.52 * lowTaper;
+        const hue = (hueBase + frac * 300) % 360;
         const [r, g, b] = hslToRgb(hue, 85, 50 + v * 25);
 
         const cos = Math.cos(angle);
