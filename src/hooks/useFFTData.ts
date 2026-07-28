@@ -30,6 +30,19 @@ export function useFFTData() {
     let frameCount = 0;
 
     listen<FFTData>('fft-data', (event) => {
+      // Pausing stops the engine emitting only once the ring buffer fills, so
+      // frames keep arriving for a moment afterwards and pin every visualizer
+      // to the last audible instant. Dropping them lets lastUpdateRef go stale
+      // so getDecayedFFT fades the spectrum out, and the waveforms are cleared
+      // explicitly because getDecayedFFT returns only bins/rms/time and can
+      // never decay them.
+      if (!usePlayerStore.getState().isPlaying) {
+        const cur = fftRef.current;
+        if (cur.wave_l || cur.wave_r) {
+          fftRef.current = { ...cur, wave_l: undefined, wave_r: undefined };
+        }
+        return;
+      }
       fftRef.current = event.payload;
       lastUpdateRef.current = Date.now();
       // Update time in store at ~15Hz to avoid excessive re-renders

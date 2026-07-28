@@ -95,7 +95,11 @@ export function StereoScope({ fftRef, lastUpdateRef, width, height }: StereoScop
       const dtN = frameMs / 16.67;
 
       const data = fftRef.current;
-      const stale = now - (lastUpdateRef.current ?? 0) > 250;
+      // Date.now(), not performance.now(): lastUpdateRef is an epoch timestamp,
+      // and subtracting it from time-since-page-load gave a hugely negative
+      // number, so `stale` was never true and the scope never went flat on
+      // pause — it just held its last trace.
+      const stale = Date.now() - (lastUpdateRef.current ?? 0) > 250;
       const waveL = !stale ? decodeWave(data?.wave_l) : [];
       const waveR = !stale ? decodeWave(data?.wave_r) : [];
       const bins = !stale && data?.bins ? data.bins : [];
