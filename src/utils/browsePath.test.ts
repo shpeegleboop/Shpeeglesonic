@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   nextField, nextFieldFor, availableFieldsFor, defaultPath, filterByPath, groupsOf,
-  selectAt, setFieldAt, sanitizePath,
+  getGroupValue, selectAt, setFieldAt, sanitizePath,
 } from './browsePath';
 import type { Track } from '../stores/playerStore';
 
@@ -186,6 +186,36 @@ describe('selectAt with ancestor-aware chaining', () => {
     const next = selectAt(path, 1, 'Radiohead');
     expect(next.filter((s) => s.field === 'artist')).toHaveLength(2);
     expect(next[next.length - 1].field).toBe('album');
+  });
+});
+
+// Regression: updateSort used to cast any sort field to GroupField and write it
+// into browsePath. Picking "Title" persisted {field:'title'}, getGroupValue fell
+// through its switch returning undefined, and destructuring it white-screened
+// the app on every launch until localStorage was cleared.
+describe('resilience to a field that is not groupable', () => {
+  it('getGroupValue never returns undefined', () => {
+    const bogus = 'title' as unknown as Parameters<typeof getGroupValue>[1];
+    expect(() => getGroupValue(LIB[0], bogus)).not.toThrow();
+    expect(getGroupValue(LIB[0], bogus)).toHaveProperty('value');
+  });
+
+  it('groupsOf survives a bogus field instead of throwing', () => {
+    const bogus = 'title' as unknown as Parameters<typeof groupsOf>[1];
+    expect(() => groupsOf(LIB, bogus)).not.toThrow();
+  });
+
+  it('sanitizePath discards a persisted path with a non-groupable field', () => {
+    const path = [{ field: 'title', value: null }] as unknown as Parameters<typeof sanitizePath>[0];
+    expect(sanitizePath(path, LIB)).toEqual([{ field: 'artist', value: null }]);
+  });
+
+  it('sanitizePath discards a path whose deeper step is non-groupable', () => {
+    const path = [
+      { field: 'artist', value: 'Radiohead' },
+      { field: 'bpm', value: null },
+    ] as unknown as Parameters<typeof sanitizePath>[0];
+    expect(sanitizePath(path, LIB)).toEqual([{ field: 'artist', value: null }]);
   });
 });
 

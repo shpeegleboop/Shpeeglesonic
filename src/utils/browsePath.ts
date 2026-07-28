@@ -32,7 +32,18 @@ export const GROUP_FIELD_LABELS: Record<GroupField, string> = {
   playlist: 'Playlist',
 };
 
-/** Moved verbatim from TrackList.tsx, which is no longer its caller. */
+export function isGroupField(f: unknown): f is GroupField {
+  return typeof f === 'string' && (GROUP_FIELDS as string[]).includes(f);
+}
+
+/**
+ * Moved from TrackList.tsx, which is no longer its caller.
+ *
+ * The default case is load-bearing, not defensive padding: persisted state can
+ * carry a field that is no longer valid, and returning undefined here meant
+ * destructuring it threw during render, which unmounts the entire React tree
+ * and leaves a black window with no clue why.
+ */
 export function getGroupValue(track: Track, field: GroupField): { value: string | null; label: string } {
   switch (field) {
     case 'artist':
@@ -47,6 +58,8 @@ export function getGroupValue(track: Track, field: GroupField): { value: string 
       return { value: track.format ?? null, label: track.format ? track.format.toUpperCase() : 'Unknown Format' };
     case 'playlist':
       return { value: track.playlist_label ?? null, label: track.playlist_label || 'Not in a Playlist' };
+    default:
+      return { value: null, label: 'Unknown' };
   }
 }
 
@@ -152,6 +165,10 @@ export function setFieldAt(path: BrowseStep[], index: number, field: GroupField)
  */
 export function sanitizePath(path: BrowseStep[], tracks: Track[]): BrowseStep[] {
   if (path.length === 0) return defaultPath();
+  // Persisted state can predate a change to GROUP_FIELDS, or have been written
+  // by a caller that pushed a non-groupable sort field in. Start over rather
+  // than carry a step nothing can group by.
+  if (!path.every((s) => isGroupField(s.field))) return defaultPath();
 
   const out: BrowseStep[] = [];
   for (let i = 0; i < path.length; i++) {

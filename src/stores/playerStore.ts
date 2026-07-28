@@ -164,6 +164,14 @@ interface PlayerState {
   // empty; browsePath[0].field is the root grouping and doubles as the SQL sort
   // column.
   browsePath: BrowseStep[];
+  /**
+   * The SQL sort column. Deliberately separate from the grouping in
+   * browsePath: you can group by artist while ordering tracks by duration, and
+   * the sort dropdown offers fields (Title, BPM, Duration…) that nothing can
+   * group by. Conflating them wrote a non-groupable field into browsePath and
+   * white-screened the app on launch.
+   */
+  browseSortBy: string;
   browseSortOrder: 'asc' | 'desc';
   browseSearch: string;
 
@@ -192,6 +200,7 @@ interface PlayerState {
   setArtZoomVisible: (v: boolean) => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
   setBrowsePath: (path: BrowseStep[]) => void;
+  setBrowseSortBy: (by: string) => void;
   setBrowseSortOrder: (order: 'asc' | 'desc') => void;
   setBrowseSearch: (q: string) => void;
   setCurrentView: (view: ViewMode) => void;
@@ -241,6 +250,7 @@ export const usePlayerStore = create<PlayerState>()(
 
   sidebarCollapsed: false,
   browsePath: defaultPath('artist'),
+  browseSortBy: 'artist',
   browseSortOrder: 'asc' as const,
   browseSearch: '',
   lyricsVisible: false,
@@ -432,6 +442,7 @@ export const usePlayerStore = create<PlayerState>()(
   setArtZoomVisible: (v) => set({ artZoomVisible: v }),
   setSidebarCollapsed: (collapsed) => set({ sidebarCollapsed: collapsed }),
   setBrowsePath: (browsePath) => set({ browsePath }),
+  setBrowseSortBy: (browseSortBy) => set({ browseSortBy }),
   setBrowseSortOrder: (browseSortOrder) => set({ browseSortOrder }),
   setBrowseSearch: (browseSearch) => set({ browseSearch }),
   setCurrentView: (view) => set({ currentView: view }),
@@ -471,6 +482,7 @@ export const usePlayerStore = create<PlayerState>()(
         // A few hundred bytes next to the queue — no impact on the throttled
         // write budget, and worth keeping so you reopen where you left off.
         browsePath: s.browsePath,
+        browseSortBy: s.browseSortBy,
         browseSortOrder: s.browseSortOrder,
         browseSearch: s.browseSearch,
       }),

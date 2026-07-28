@@ -3,7 +3,6 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { type Track, usePlayerStore } from '../stores/playerStore';
 import { matchesQuery } from '../utils/trackSearch';
-import { defaultPath, type GroupField } from '../utils/browsePath';
 
 /** What `scan_folder` reports back. Mirrors scanner::ScanSummary. */
 export interface ScanSummary {
@@ -31,8 +30,7 @@ export function useLibrary() {
   // Sort and search live in the store, not in local state. They used to be
   // useState here, which meant LibraryView and Sidebar each held their own copy
   // and neither view ever reflected the other.
-  const browsePath = usePlayerStore((s) => s.browsePath);
-  const sortBy = browsePath[0]?.field ?? 'artist';
+  const sortBy = usePlayerStore((s) => s.browseSortBy);
   const sortOrder = usePlayerStore((s) => s.browseSortOrder);
   const searchQuery = usePlayerStore((s) => s.browseSearch);
 
@@ -121,12 +119,13 @@ export function useLibrary() {
   const updateSort = useCallback((by: string, order?: string) => {
     const st = usePlayerStore.getState();
     const newOrder = (order || (by === sortBy && sortOrder === 'asc' ? 'desc' : 'asc')) as 'asc' | 'desc';
+    st.setBrowseSortBy(by);
     st.setBrowseSortOrder(newOrder);
-    // Changing the grouping field invalidates any drill-down below it — the
-    // old path described a different chain.
-    if (by !== sortBy) {
-      st.setBrowsePath(defaultPath(by as GroupField));
-    }
+    // Deliberately does NOT touch browsePath. Sorting and grouping are separate
+    // concerns: the sort list offers Title, BPM, Duration and friends, none of
+    // which anything can group by. Writing one into browsePath is what made
+    // getGroupValue return undefined and blank the window on launch. Grouping
+    // is changed only through a column's own dropdown.
     fetchTracks(by, newOrder);
   }, [sortBy, sortOrder, fetchTracks]);
 
