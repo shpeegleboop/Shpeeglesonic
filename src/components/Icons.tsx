@@ -141,6 +141,8 @@ export const LibraryIcon = icon(
 
 export const ChevronRightIcon = icon(<path d="m9 18 6-6-6-6" />);
 
+export const ChevronLeftIcon = icon(<path d="m15 18-6-6 6-6" />);
+
 export const ChevronDownIcon = icon(<path d="m6 9 6 6 6-6" />);
 
 export const PlusIcon = icon(
