@@ -123,6 +123,89 @@ pub fn open_stream_seeked(path: &str, sr: u32, ch: u16, seek: f64) -> Result<Chi
         .map_err(|e| format!("Failed to spawn ffmpeg: {}", e))
 }
 
+/// What a probe tells us about a file, from either backend.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProbeInfo {
+    pub sample_rate: u32,
+    pub channels: u16,
+    pub duration_seconds: f64,
+    pub bit_depth: Option<u32>,
+    pub bitrate: Option<u32>,
+}
+
+/// ffprobe encodes most numeric fields as JSON *strings* ("44100"), but a few
+/// as real numbers (channels, bits_per_sample). Read either.
+fn num<T: std::str::FromStr>(v: Option<&serde_json::Value>) -> Option<T> {
+    match v? {
+        serde_json::Value::String(s) => s.parse().ok(),
+        serde_json::Value::Number(n) => n.to_string().parse().ok(),
+        _ => None,
+    }
+}
+
+pub fn parse_probe_json(json: &str) -> Result<ProbeInfo, String> {
+    let root: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| format!("ffprobe JSON was unreadable: {}", e))?;
+
+    let stream = root
+        .get("streams")
+        .and_then(|s| s.as_array())
+        .and_then(|a| a.first())
+        .ok_or_else(|| "ffprobe reported no audio stream".to_string())?;
+
+    let format = root.get("format");
+
+    let sample_rate: u32 = num(stream.get("sample_rate"))
+        .ok_or_else(|| "ffprobe reported no sample rate".to_string())?;
+    let channels: u16 = num(stream.get("channels")).unwrap_or(2);
+
+    // DSF and some containers carry duration only at the format level.
+    let duration_seconds: f64 = num(stream.get("duration"))
+        .or_else(|| num(format.and_then(|f| f.get("duration"))))
+        .unwrap_or(0.0);
+
+    let bit_depth: Option<u32> = num(stream.get("bits_per_raw_sample"))
+        .or_else(|| num(stream.get("bits_per_sample")))
+        .filter(|b| *b > 0);
+
+    let bitrate: Option<u32> = num(stream.get("bit_rate"))
+        .or_else(|| num(format.and_then(|f| f.get("bit_rate"))))
+        .filter(|b| *b > 0);
+
+    Ok(ProbeInfo {
+        sample_rate,
+        channels,
+        duration_seconds,
+        bit_depth,
+        bitrate,
+    })
+}
+
+/// Probe a file with the bundled (or PATH) ffprobe.
+pub fn probe(path: &str) -> Result<ProbeInfo, String> {
+    let bin = resolve(Tool::Ffprobe).ok_or_else(|| "ffprobe is not available".to_string())?;
+    let out = Command::new(bin)
+        .args([
+            "-v",
+            "quiet",
+            "-print_format",
+            "json",
+            "-show_streams",
+            "-show_format",
+            "-select_streams",
+            "a:0",
+            path,
+        ])
+        .stderr(Stdio::null())
+        .output()
+        .map_err(|e| format!("Failed to spawn ffprobe: {}", e))?;
+
+    if !out.status.success() {
+        return Err("ffprobe could not read this file".to_string());
+    }
+    parse_probe_json(&String::from_utf8_lossy(out.stdout.as_slice()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -157,5 +240,66 @@ mod tests {
             pick_first_present(&[PathBuf::from("/a"), PathBuf::from("/b")], &none),
             None
         );
+    }
+
+    /// Trimmed from real output of our own ffprobe against tests/fixtures/tone.aiff.
+    /// Note sample_rate/duration/bit_rate are strings while channels and
+    /// bits_per_sample are numbers — the mix is the point.
+    const AIFF_JSON: &str = r#"{
+      "streams": [{
+        "index": 0, "codec_name": "pcm_s16be", "codec_type": "audio",
+        "sample_fmt": "s16", "sample_rate": "44100", "channels": 2,
+        "bits_per_sample": 16, "duration": "0.500000", "bit_rate": "1411200"
+      }],
+      "format": { "format_name": "aiff", "duration": "0.500000", "bit_rate": "1412064" }
+    }"#;
+
+    /// DSF: rate as a string, no per-stream duration, no bit depth field.
+    const DSF_JSON: &str = r#"{
+      "streams": [{ "sample_rate": "2822400", "channels": 2, "sample_fmt": "flt" }],
+      "format": { "duration": "12.000000" }
+    }"#;
+
+    #[test]
+    fn parses_string_and_numeric_fields_together() {
+        let info = parse_probe_json(AIFF_JSON).expect("should parse");
+        assert_eq!(info.sample_rate, 44100);
+        assert_eq!(info.channels, 2);
+        assert!((info.duration_seconds - 0.5).abs() < 1e-6);
+        assert_eq!(info.bit_depth, Some(16));
+        assert_eq!(info.bitrate, Some(1411200));
+    }
+
+    #[test]
+    fn falls_back_to_format_duration_when_the_stream_has_none() {
+        let info = parse_probe_json(DSF_JSON).expect("should parse");
+        assert_eq!(info.sample_rate, 2822400, "native DSD rate must survive");
+        assert!((info.duration_seconds - 12.0).abs() < 1e-6);
+        assert_eq!(info.bit_depth, None);
+        assert_eq!(info.bitrate, None);
+    }
+
+    #[test]
+    fn rejects_json_with_no_audio_stream() {
+        let err = parse_probe_json(r#"{"streams":[],"format":{}}"#).unwrap_err();
+        assert!(err.contains("no audio stream"), "got: {}", err);
+    }
+
+    #[test]
+    fn rejects_malformed_json() {
+        assert!(parse_probe_json("not json at all").is_err());
+    }
+
+    #[test]
+    fn probes_a_real_file_when_ffprobe_is_available() {
+        if resolve(Tool::Ffprobe).is_none() {
+            eprintln!("skipping: no ffprobe available");
+            return;
+        }
+        let path = format!("{}/tests/fixtures/tone.aiff", env!("CARGO_MANIFEST_DIR"));
+        let info = probe(&path).expect("ffprobe should read the AIFF fixture");
+        assert_eq!(info.sample_rate, 44100);
+        assert_eq!(info.channels, 2);
+        assert!((info.duration_seconds - 0.5).abs() < 0.05);
     }
 }
