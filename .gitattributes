@@ -1,0 +1,4 @@
+# Shell scripts must stay LF — they run under WSL/Docker, where a CRLF
+# shebang line yields "bad interpreter: /usr/bin/env bash^M".
+*.sh text eol=lf
+Dockerfile text eol=lf
