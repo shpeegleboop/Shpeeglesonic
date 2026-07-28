@@ -163,7 +163,7 @@ impl AudioEngine {
         // Check if Symphonia can handle this codec, otherwise use ffmpeg fallback
         let symphonia_err = super::decoder::open_for_streaming(path).err();
         let use_ffmpeg = if symphonia_err.is_some() {
-            if super::decoder::ffmpeg_available() {
+            if super::ffmpeg::is_available() {
                 true
             } else {
                 return Err(format!(
@@ -616,7 +616,7 @@ fn decode_thread_ffmpeg(
 ) {
     use std::io::Read;
 
-    let mut child = match super::decoder::open_ffmpeg_stream(path, device_sr, device_channels) {
+    let mut child = match super::ffmpeg::open_stream(path, device_sr, device_channels) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("ffmpeg fallback failed: {}", e);
@@ -653,7 +653,7 @@ fn decode_thread_ffmpeg(
                     // Kill current ffmpeg, restart at new position
                     let _ = child.kill();
                     let _ = child.wait();
-                    match super::decoder::open_ffmpeg_stream_seeked(
+                    match super::ffmpeg::open_stream_seeked(
                         &path_owned, device_sr, device_channels, seconds,
                     ) {
                         Ok(mut new_child) => {
