@@ -229,9 +229,9 @@ export function SettingsPanel() {
               onChange={(e) => updateViz({ quality: e.target.value as 'low' | 'medium' | 'high' })}
               className="bg-cosmic-bg border border-cosmic-border rounded px-3 py-1.5 text-sm w-full"
             >
-              <option value="low">Low (best performance)</option>
+              <option value="low">Low</option>
               <option value="medium">Medium</option>
-              <option value="high">High (GPU intensive)</option>
+              <option value="high">High</option>
             </select>
           </div>
         </div>

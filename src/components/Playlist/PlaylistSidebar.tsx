@@ -20,6 +20,11 @@ export function PlaylistSidebar() {
   const [renameValue, setRenameValue] = useState('');
   const [menu, setMenu] = useState<{ pl: Playlist; x: number; y: number } | null>(null);
   const dragFromRef = useRef<number | null>(null);
+  // Enter and Escape both unmount the input, which fires blur on the way out.
+  // Without this flag the blur handler would save a second time after Enter, or
+  // resurrect an edit the user just cancelled with Escape. Reset on focus so
+  // each edit starts clean.
+  const editHandledRef = useRef(false);
   const [dropTarget, setDropTarget] = useState<number | null>(null);
 
   // Highlights the row a track drag is hovering. Separate from dropTarget,
@@ -154,12 +159,24 @@ export function PlaylistSidebar() {
                 onChange={(e) => setRenameValue(e.target.value)}
                 onKeyDown={async (e) => {
                   if (e.key === 'Enter' && renameValue.trim()) {
+                    editHandledRef.current = true;
                     await renamePlaylist(pl.id, renameValue.trim());
                     setRenaming(null);
                   }
-                  if (e.key === 'Escape') setRenaming(null);
+                  if (e.key === 'Escape') {
+                    editHandledRef.current = true;
+                    setRenaming(null);
+                  }
                 }}
-                onBlur={() => setRenaming(null)}
+                onFocus={() => { editHandledRef.current = false; }}
+                onBlur={async () => {
+                  if (editHandledRef.current) return;
+                  // Clicking away commits — discarding a rename someone just
+                  // typed is the surprising behaviour, not the safe one.
+                  const next = renameValue.trim();
+                  if (next && next !== pl.name) await renamePlaylist(pl.id, next);
+                  setRenaming(null);
+                }}
                 className="w-full bg-black/30 border border-neon-purple/30 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-neon-purple/60"
                 autoFocus
               />
@@ -239,14 +256,23 @@ export function PlaylistSidebar() {
               value={newName}
               onChange={(e) => setNewName(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === 'Enter') handleCreate();
+                if (e.key === 'Enter') {
+                  editHandledRef.current = true;
+                  handleCreate();
+                }
                 if (e.key === 'Escape') {
+                  editHandledRef.current = true;
                   setCreating(false);
                   setNewName('');
                 }
               }}
+              onFocus={() => { editHandledRef.current = false; }}
               onBlur={() => {
-                if (!newName.trim()) {
+                if (editHandledRef.current) return;
+                // Clicking away creates the playlist rather than silently
+                // throwing away the name that was just typed.
+                if (newName.trim()) handleCreate();
+                else {
                   setCreating(false);
                   setNewName('');
                 }

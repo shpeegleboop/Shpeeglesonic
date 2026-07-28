@@ -50,7 +50,7 @@ export function BottomBar() {
 
   return (
     <div
-      className={`h-16 glass-surface border-t border-cosmic-border/50 flex items-center px-3 gap-3 select-none ${
+      className={`h-[4.5rem] glass-surface border-t border-cosmic-border/50 flex items-center px-3 gap-3 select-none ${
         dropActive ? 'ring-1 ring-inset ring-neon-purple' : ''
       }`}
       onDragOver={(e) => {

@@ -27,7 +27,8 @@ function ErrorToast() {
   if (!error) return null;
 
   return (
-    <div className="fixed bottom-16 left-1/2 -translate-x-1/2 z-50 max-w-md">
+    // Sits just above BottomBar — keep bottom-[4.5rem] in step with its height.
+    <div className="fixed bottom-[4.5rem] left-1/2 -translate-x-1/2 z-50 max-w-md">
       <div className="bg-red-900/90 border border-red-500/50 rounded-lg px-4 py-3 shadow-xl shadow-black/50 backdrop-blur-sm flex items-center gap-3">
         <span className="text-red-300 text-sm flex-1">{error}</span>
         <button onClick={() => setError(null)} className="text-red-400 hover:text-white text-xs flex-shrink-0">

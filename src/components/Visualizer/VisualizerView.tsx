@@ -109,9 +109,9 @@ export function VisualizerView() {
               onChange={(e) => update({ quality: e.target.value as 'low' | 'medium' | 'high' })}
               className="w-full bg-cosmic-bg/60 border border-cosmic-border/40 rounded-md text-xs text-gray-300 py-1.5 px-2 focus:outline-none focus:border-neon-purple/40"
             >
-              <option value="low">Low — best performance</option>
+              <option value="low">Low</option>
               <option value="medium">Medium</option>
-              <option value="high">High — GPU intensive</option>
+              <option value="high">High</option>
             </select>
             <p className="text-[11px] text-gray-600 mt-0.5">Detail level: iterations, particles, notes</p>
           </div>
