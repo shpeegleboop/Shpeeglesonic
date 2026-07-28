@@ -189,8 +189,16 @@ export function VisualizerContainer({ inline }: VisualizerContainerProps) {
 
         <VisualizerQuickSettings hidden={idle} />
 
-        {/* Subtle controls overlay on hover */}
-        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 opacity-0 hover:opacity-100 transition-opacity bg-cosmic-panel/80 backdrop-blur-md rounded-lg px-4 py-2 flex items-center gap-4">
+        {/* Subtle controls overlay on hover. Non-interactive while idle: the
+            webview re-asserts a cursor for whatever interactive element sits
+            under the pointer, which undoes the window-level hide — so over
+            these controls the cursor stayed visible while it vanished over
+            plain canvas. Faded-out controls should not be hoverable regardless. */}
+        <div
+          className={`absolute bottom-4 left-1/2 -translate-x-1/2 opacity-0 hover:opacity-100 transition-opacity bg-cosmic-panel/80 backdrop-blur-md rounded-lg px-4 py-2 flex items-center gap-4 ${
+            idle ? 'pointer-events-none' : ''
+          }`}
+        >
           <span className="text-xs text-gray-400">ESC to exit</span>
           <div className="flex gap-1">
             {VISUALIZER_MODES.map((m) => (
