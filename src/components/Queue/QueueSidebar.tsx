@@ -7,6 +7,8 @@ import { QueueIcon, CloseIcon, TrashIcon, PlayIcon, PauseIcon } from '../Icons';
 import { TrackContextMenu } from '../Library/TrackContextMenu';
 import { MetadataEditModal } from '../Library/MetadataEditModal';
 import { ConfirmDialog } from '../ConfirmDialog';
+import { isTrackDrag, readTrackDrag, resolveTracks } from '../../utils/trackDrag';
+import { getGlobalTracks } from '../../hooks/useLibrary';
 
 export function QueueSidebar() {
   const [contextMenu, setContextMenu] = useState<{ track: Track; x: number; y: number } | null>(null);
@@ -14,6 +16,17 @@ export function QueueSidebar() {
   const [confirmClear, setConfirmClear] = useState(false);
   const dragFromRef = useRef<number | null>(null);
   const [dropTarget, setDropTarget] = useState<number | null>(null);
+  const [trackDropAt, setTrackDropAt] = useState<number | null>(null);
+
+  const dropTracksAt = (e: React.DragEvent, index: number) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setTrackDropAt(null);
+    const payload = readTrackDrag(e.dataTransfer);
+    if (!payload) return;
+    const dropped = resolveTracks(payload.trackIds, getGlobalTracks());
+    if (dropped.length) usePlayerStore.getState().insertIntoQueue(dropped, index);
+  };
   const queue = usePlayerStore((s) => s.queue);
   const queueIndex = usePlayerStore((s) => s.queueIndex);
   const queueVisible = usePlayerStore((s) => s.queueVisible);
@@ -89,7 +102,21 @@ export function QueueSidebar() {
           </p>
         </div>
       ) : (
-        <div ref={parentRef} className="flex-1 overflow-auto">
+        <div
+          ref={parentRef}
+          className="flex-1 overflow-auto"
+          onDragOver={(e) => {
+            if (!isTrackDrag(e.dataTransfer)) return;
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'copy';
+          }}
+          onDrop={(e) => {
+            if (!isTrackDrag(e.dataTransfer)) return;
+            // Rows call stopPropagation, so reaching here means empty space
+            // below the last row — append rather than doing nothing.
+            dropTracksAt(e, usePlayerStore.getState().queue.length);
+          }}
+        >
           <div
             style={{
               height: `${virtualizer.getTotalSize()}px`,
@@ -118,7 +145,7 @@ export function QueueSidebar() {
                     isCurrent ? 'bg-neon-purple/10 border-l-2 border-l-neon-purple' : ''
                   } ${isPast ? 'opacity-50' : ''} ${
                     dropTarget === item.index ? 'border-t-2 border-t-neon-purple' : ''
-                  }`}
+                  } ${trackDropAt === item.index ? 'border-t-2 border-t-neon-purple' : ''}`}
                   draggable
                   onDragStart={(e) => {
                     dragFromRef.current = item.index;
@@ -127,11 +154,22 @@ export function QueueSidebar() {
                     e.dataTransfer.setData('text/plain', String(item.index));
                   }}
                   onDragOver={(e) => {
+                    if (isTrackDrag(e.dataTransfer)) {
+                      e.preventDefault();
+                      e.dataTransfer.dropEffect = 'copy';
+                      setTrackDropAt(item.index);
+                      return;
+                    }
                     e.preventDefault();
                     e.dataTransfer.dropEffect = 'move';
                     if (dropTarget !== item.index) setDropTarget(item.index);
                   }}
+                  onDragLeave={() => setTrackDropAt(null)}
                   onDrop={(e) => {
+                    if (isTrackDrag(e.dataTransfer)) {
+                      dropTracksAt(e, item.index);
+                      return;
+                    }
                     e.preventDefault();
                     if (dragFromRef.current !== null) {
                       usePlayerStore.getState().reorderQueue(dragFromRef.current, item.index);

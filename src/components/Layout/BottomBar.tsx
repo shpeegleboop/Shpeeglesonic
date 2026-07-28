@@ -1,5 +1,8 @@
+import { useState } from 'react';
 import { usePlayerStore } from '../../stores/playerStore';
 import { useAudioPlayer } from '../../hooks/useAudioPlayer';
+import { isTrackDrag, readTrackDrag, resolveTracks, playNextOrder } from '../../utils/trackDrag';
+import { getGlobalTracks } from '../../hooks/useLibrary';
 import { formatDuration, trackDisplayTitle, trackDisplayArtist } from '../../utils/formatters';
 import { AlbumArt } from '../Player/AlbumArt';
 import {
@@ -23,6 +26,20 @@ export function BottomBar() {
   const volume = usePlayerStore((s) => s.volume);
   const isMuted = usePlayerStore((s) => s.isMuted);
   const queueVisible = usePlayerStore((s) => s.queueVisible);
+  const [dropActive, setDropActive] = useState(false);
+
+  const dropPlayNext = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDropActive(false);
+    const payload = readTrackDrag(e.dataTransfer);
+    if (!payload) return;
+    const dropped = resolveTracks(payload.trackIds, getGlobalTracks());
+    // Each playNext inserts directly after the current track, so applying the
+    // list in order would play a dropped album backwards.
+    for (const t of playNextOrder(dropped)) {
+      usePlayerStore.getState().playNext(t);
+    }
+  };
   const currentView = usePlayerStore((s) => s.currentView);
   const player = useAudioPlayer();
 
@@ -32,7 +49,19 @@ export function BottomBar() {
     isMuted || volume === 0 ? VolumeMuteIcon : volume < 50 ? VolumeLowIcon : VolumeHighIcon;
 
   return (
-    <div className="h-16 glass-surface border-t border-cosmic-border/50 flex items-center px-3 gap-3 select-none">
+    <div
+      className={`h-16 glass-surface border-t border-cosmic-border/50 flex items-center px-3 gap-3 select-none ${
+        dropActive ? 'ring-1 ring-inset ring-neon-purple' : ''
+      }`}
+      onDragOver={(e) => {
+        if (!isTrackDrag(e.dataTransfer)) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'copy';
+        setDropActive(true);
+      }}
+      onDragLeave={() => setDropActive(false)}
+      onDrop={dropPlayNext}
+    >
       {/* Progress bar (full width at top — tall hit area, thin visual bar) */}
       <div
         className="absolute left-0 right-0 h-3 cursor-pointer group flex items-end z-10"
