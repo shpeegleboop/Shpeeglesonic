@@ -1,33 +1,59 @@
 import { invoke } from '@tauri-apps/api/core';
 import { usePlayerStore, Track, TrackInfo } from '../stores/playerStore';
 
+/**
+ * Load requests are serialized process-wide, not per hook instance — several
+ * components call useAudioPlayer(), and two of them must not be able to start
+ * overlapping loads.
+ *
+ * The old guard was `if (store.isLoading) return`, reading a render-time
+ * snapshot rather than live state, so it never fired for calls made in the same
+ * tick. Two loads would then race to the engine and whichever reached its mutex
+ * last won the audio — leaving the UI showing one track while a different one
+ * played.
+ */
+let playSeq = 0;
+let playChain: Promise<void> = Promise.resolve();
+
 export function useAudioPlayer() {
   const store = usePlayerStore();
 
-  const playTrack = async (track: Track) => {
-    // Prevent multiple simultaneous loads
-    if (store.isLoading) return;
-    try {
-      store.setIsLoading(true);
-      store.setPlaybackError(null);
-      store.setCurrentTrack(track);
-      const info = await invoke<TrackInfo>('play_file', { path: track.file_path });
-      store.setTrackInfo(info);
-      store.setDuration(info.duration_seconds);
-      store.setCurrentTime(0);
-      store.setIsPlaying(true);
+  const playTrack = (track: Track): Promise<void> => {
+    const seq = ++playSeq;
+    playChain = playChain.then(async () => {
+      // A newer request arrived while this one was queued — skip it rather than
+      // loading a track the user has already moved past.
+      if (seq !== playSeq) return;
 
-      // Record play count
-      if (track.id > 0) {
-        invoke('record_play', { trackId: track.id }).catch(() => {});
+      const st = usePlayerStore.getState();
+      st.setIsLoading(true);
+      st.setPlaybackError(null);
+      // Set inside the chain, immediately before the load, so the UI can never
+      // advertise a track the engine was not actually asked to play.
+      st.setCurrentTrack(track);
+      try {
+        const info = await invoke<TrackInfo>('play_file', { path: track.file_path });
+        if (seq !== playSeq) return; // superseded mid-load
+        st.setTrackInfo(info);
+        st.setDuration(info.duration_seconds);
+        st.setCurrentTime(0);
+        st.setIsPlaying(true);
+
+        // Record play count
+        if (track.id > 0) {
+          invoke('record_play', { trackId: track.id }).catch(() => {});
+        }
+      } catch (e) {
+        console.error('Play failed:', e);
+        if (seq === playSeq) {
+          st.setPlaybackError(`Couldn't play ${track.file_name}: ${e}`);
+          st.setIsPlaying(false);
+        }
+      } finally {
+        if (seq === playSeq) st.setIsLoading(false);
       }
-    } catch (e) {
-      console.error('Play failed:', e);
-      store.setPlaybackError(`Couldn't play ${track.file_name}: ${e}`);
-      store.setIsPlaying(false);
-    } finally {
-      store.setIsLoading(false);
-    }
+    });
+    return playChain;
   };
 
   const playFile = async (path: string) => {
@@ -157,7 +183,7 @@ export function useAudioPlayer() {
   };
 
   const playNextTrack = async () => {
-    const next = store.nextTrack();
+    const next = usePlayerStore.getState().nextTrack();
     if (next) {
       await playTrack(next);
     } else {
@@ -166,12 +192,14 @@ export function useAudioPlayer() {
   };
 
   const playPrevTrack = async () => {
-    // If more than 3 seconds in, restart current track
-    if (store.currentTime > 3 && store.currentTrack) {
+    // Live state: currentTime advances 15x a second, so a render snapshot here
+    // decides restart-vs-previous from a stale position.
+    const s = usePlayerStore.getState();
+    if (s.currentTime > 3 && s.currentTrack) {
       await seek(0);
       return;
     }
-    const prev = store.prevTrack();
+    const prev = s.prevTrack();
     if (prev) {
       await playTrack(prev);
     }
