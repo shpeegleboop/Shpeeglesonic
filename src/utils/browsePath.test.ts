@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  nextField, defaultPath, filterByPath, groupsOf,
+  nextField, nextFieldFor, availableFieldsFor, defaultPath, filterByPath, groupsOf,
   selectAt, setFieldAt, sanitizePath,
 } from './browsePath';
 import type { Track } from '../stores/playerStore';
@@ -120,6 +120,72 @@ describe('selectAt', () => {
       { field: 'artist', value: 'Khruangbin' },
       { field: 'album', value: null },
     ]);
+  });
+});
+
+// A column must never re-group by a field an ancestor already pinned to one
+// value: grouping Radiohead's tracks by artist yields a single "Radiohead"
+// group, and selecting it appends another identical column forever.
+describe('availableFieldsFor', () => {
+  it('offers every field at the root', () => {
+    expect(availableFieldsFor(defaultPath('artist'), 0)).toContain('artist');
+    expect(availableFieldsFor(defaultPath('artist'), 0)).toContain('album');
+  });
+
+  it('hides fields already fixed by an ancestor column', () => {
+    const path = [
+      { field: 'genre' as const, value: 'Rock' },
+      { field: 'artist' as const, value: null },
+    ];
+    const opts = availableFieldsFor(path, 1);
+    expect(opts).not.toContain('genre');
+    expect(opts).toContain('artist');
+    expect(opts).toContain('album');
+  });
+
+  it('still offers the column its own current field', () => {
+    const path = [
+      { field: 'artist' as const, value: 'Radiohead' },
+      { field: 'album' as const, value: null },
+    ];
+    expect(availableFieldsFor(path, 1)).toContain('album');
+  });
+});
+
+describe('nextFieldFor', () => {
+  it('skips a chain field that an ancestor already used', () => {
+    // genre -> artist normally, but artist is already pinned above.
+    const path = [
+      { field: 'artist' as const, value: 'Radiohead' },
+      { field: 'genre' as const, value: 'Rock' },
+    ];
+    expect(nextFieldFor(path, 1)).toBe('album');
+  });
+
+  it('returns null once every chain field is used', () => {
+    const path = [
+      { field: 'artist' as const, value: 'Radiohead' },
+      { field: 'album' as const, value: 'Kid A' },
+    ];
+    expect(nextFieldFor(path, 1)).toBeNull();
+  });
+
+  it('cannot produce a self-referential next field', () => {
+    const path = [{ field: 'artist' as const, value: 'Radiohead' }];
+    expect(nextFieldFor(path, 0)).not.toBe('artist');
+  });
+});
+
+describe('selectAt with ancestor-aware chaining', () => {
+  it('does not append a column for a field already pinned above', () => {
+    // Regrouping by artist under an artist would loop forever.
+    const path = [
+      { field: 'artist' as const, value: 'Radiohead' },
+      { field: 'artist' as const, value: null },
+    ];
+    const next = selectAt(path, 1, 'Radiohead');
+    expect(next.filter((s) => s.field === 'artist')).toHaveLength(2);
+    expect(next[next.length - 1].field).toBe('album');
   });
 });
 

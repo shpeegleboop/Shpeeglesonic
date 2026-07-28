@@ -67,6 +67,30 @@ export function nextField(current: GroupField): GroupField | null {
   return CHAIN[current];
 }
 
+/**
+ * Fields a column may group by: everything except those an ancestor column has
+ * already pinned to a single value. Re-grouping Radiohead's tracks by artist
+ * yields one group called "Radiohead", and selecting it appends another
+ * identical column — forever. Excluding used fields makes that unreachable
+ * rather than merely discouraged.
+ */
+export function availableFieldsFor(path: BrowseStep[], index: number): GroupField[] {
+  const used = new Set(path.slice(0, index).map((s) => s.field));
+  return GROUP_FIELDS.filter((f) => !used.has(f));
+}
+
+/**
+ * The next field after column `index`, skipping any the path already uses.
+ * Returns null when the chain is exhausted, which is what makes a column the
+ * last one before tracks.
+ */
+export function nextFieldFor(path: BrowseStep[], index: number): GroupField | null {
+  const used = new Set(path.slice(0, index + 1).map((s) => s.field));
+  let f = nextField(path[index].field);
+  while (f && used.has(f)) f = nextField(f);
+  return f;
+}
+
 export function defaultPath(root: GroupField = 'artist'): BrowseStep[] {
   return [{ field: root, value: null }];
 }
@@ -109,7 +133,7 @@ export function selectAt(path: BrowseStep[], index: number, value: string | null
   const head = path.slice(0, index);
   const current = path[index];
   const kept: BrowseStep[] = [...head, { field: current.field, value }];
-  const next = nextField(current.field);
+  const next = nextFieldFor(kept, kept.length - 1);
   return next ? [...kept, { field: next, value: null }] : kept;
 }
 
@@ -148,7 +172,7 @@ export function sanitizePath(path: BrowseStep[], tracks: Track[]): BrowseStep[] 
   // A fully-selected path still needs its trailing unselected column.
   const last = out[out.length - 1];
   if (last && last.value !== null) {
-    const next = nextField(last.field);
+    const next = nextFieldFor(out, out.length - 1);
     if (next) out.push({ field: next, value: null });
   }
   return out.length > 0 ? out : defaultPath();

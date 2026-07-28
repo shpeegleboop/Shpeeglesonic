@@ -27,8 +27,18 @@ export function Sidebar() {
   // Only the deepest column fits at 288px — three side-by-side would be 96px
   // each. The breadcrumb walks back up instead.
   const deepest = columns[columns.length - 1];
-  const crumbs = path.slice(0, -1);
-  const parent = crumbs[crumbs.length - 1];
+
+  // The track list is a derived column with no path step of its own, so going
+  // back from it means clearing the deepest step's value (returning to the
+  // album list), not popping a step off.
+  const backIndex = deepest?.isLeaf ? path.length - 1 : (deepest?.index ?? 0) - 1;
+  const canGoBack = backIndex >= 0;
+  // What we'd return to, plus the selection currently pinning this view — the
+  // sidebar shows one column, so that context isn't visible anywhere else.
+  const backField = canGoBack ? GROUP_FIELD_LABELS[path[backIndex].field] : '';
+  const pinned = deepest?.isLeaf
+    ? path[path.length - 1]?.value
+    : path[backIndex]?.value;
 
   return (
     <aside className="w-72 flex flex-col bg-cosmic-surface border-r border-cosmic-border/50 overflow-hidden">
@@ -36,16 +46,17 @@ export function Sidebar() {
         <SearchBar value={library.searchQuery} onChange={library.updateSearch} />
       </div>
 
-      {parent && (
+      {canGoBack && (
         <button
-          onClick={() => popTo(crumbs.length - 1)}
-          className="flex items-center gap-1 px-2 py-1.5 text-xs text-gray-400 hover:text-white hover:bg-neon-purple/10 border-b border-cosmic-border/30 transition-colors"
-          title="Back"
+          onClick={() => popTo(backIndex)}
+          className="flex items-center gap-1 px-2 py-1.5 text-xs text-gray-400 hover:text-white hover:bg-neon-purple/10 border-b border-cosmic-border/30 transition-colors w-full"
+          title={`Back to ${backField}`}
         >
           <ChevronLeftIcon size={12} />
-          <span className="truncate">
-            {parent.value ?? GROUP_FIELD_LABELS[parent.field]}
-          </span>
+          <span className="shrink-0">{backField}</span>
+          {pinned && (
+            <span className="truncate text-gray-500 ml-auto">{pinned}</span>
+          )}
         </button>
       )}
 

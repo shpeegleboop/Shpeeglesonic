@@ -2,7 +2,8 @@ import { useMemo } from 'react';
 import { usePlayerStore, type Track } from '../stores/playerStore';
 import {
   type GroupField, type BrowseGroup, type BrowseStep,
-  filterByPath, groupsOf, nextField, sanitizePath, selectAt, setFieldAt,
+  availableFieldsFor, filterByPath, groupsOf, nextFieldFor,
+  sanitizePath, selectAt, setFieldAt,
 } from '../utils/browsePath';
 
 export interface BrowseColumnModel {
@@ -10,6 +11,8 @@ export interface BrowseColumnModel {
   field: GroupField;
   selected: string | null;
   groups: BrowseGroup[];
+  /** Grouping fields this column may offer — excludes ones pinned above it. */
+  fields: GroupField[];
   /** True when this column shows tracks rather than group headings. */
   isLeaf: boolean;
   leafTracks: Track[];
@@ -40,22 +43,39 @@ export function useBrowse(tracks: Track[], allTracks: Track[]): BrowseModel {
   // restores the view. `allTracks` exists on useLibrary for exactly this.
   const path = useMemo(() => sanitizePath(rawPath, allTracks), [rawPath, allTracks]);
 
-  const columns = useMemo<BrowseColumnModel[]>(
-    () =>
-      path.map((step, i) => {
-        const visible = filterByPath(tracks, path, i);
-        const isLeaf = nextField(step.field) === null && step.value !== null;
-        return {
-          index: i,
-          field: step.field,
-          selected: step.value,
-          groups: isLeaf ? [] : groupsOf(visible, step.field),
-          isLeaf,
-          leafTracks: isLeaf ? filterByPath(tracks, path, i + 1) : [],
-        };
-      }),
-    [tracks, path]
-  );
+  const columns = useMemo<BrowseColumnModel[]>(() => {
+    // Every path step is a grouping column. The track list is a SEPARATE,
+    // derived column appended at the end — it is not a step. Deriving it this
+    // way is what keeps the whole tree visible: picking an album adds a third
+    // column instead of turning the album column into a track list.
+    const cols: BrowseColumnModel[] = path.map((step, i) => ({
+      index: i,
+      field: step.field,
+      selected: step.value,
+      groups: groupsOf(filterByPath(tracks, path, i), step.field),
+      fields: availableFieldsFor(path, i),
+      isLeaf: false,
+      leafTracks: [],
+    }));
+
+    const lastIndex = path.length - 1;
+    const last = path[lastIndex];
+    // Tracks appear once the deepest column has a selection and the chain has
+    // nothing left to group by.
+    if (last && last.value !== null && nextFieldFor(path, lastIndex) === null) {
+      cols.push({
+        index: path.length,
+        field: last.field,
+        selected: null,
+        groups: [],
+        fields: [],
+        isLeaf: true,
+        leafTracks: filterByPath(tracks, path, path.length),
+      });
+    }
+
+    return cols;
+  }, [tracks, path]);
 
   return {
     path,

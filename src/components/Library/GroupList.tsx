@@ -3,7 +3,7 @@ import { useVirtualizer } from '@tanstack/react-virtual';
 import { type BrowseColumnModel } from '../../hooks/useBrowse';
 import {
   type BrowseGroup, type GroupField,
-  GROUP_FIELDS, GROUP_FIELD_LABELS,
+  GROUP_FIELD_LABELS,
 } from '../../utils/browsePath';
 import { FieldDropdown } from './FieldDropdown';
 import { GroupContextMenu } from './GroupContextMenu';
@@ -34,6 +34,10 @@ export function GroupList({
   const [menu, setMenu] = useState<{ group: BrowseGroup; x: number; y: number } | null>(null);
   const [renaming, setRenaming] = useState<BrowseGroup | null>(null);
 
+  // Excludes fields an ancestor column already pinned, which is what stops
+  // artist > artist > artist from being reachable at all.
+  const fields = column.fields;
+
   const virtualizer = useVirtualizer({
     count: column.groups.length,
     getScrollElement: () => parentRef.current,
@@ -46,7 +50,7 @@ export function GroupList({
       <div className="p-2 border-b border-cosmic-border/30 flex">
         <FieldDropdown
           value={column.field}
-          options={GROUP_FIELDS.map((f) => ({ value: f, label: GROUP_FIELD_LABELS[f] }))}
+          options={fields.map((f) => ({ value: f, label: GROUP_FIELD_LABELS[f] }))}
           onChange={(v) => onSetField(v as GroupField)}
           ariaLabel="Group by"
         />
