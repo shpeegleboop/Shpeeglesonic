@@ -12,6 +12,7 @@ import {
 import { TrackContextMenu } from './TrackContextMenu';
 import { MetadataEditModal } from './MetadataEditModal';
 import { MusicNoteIcon } from '../Icons';
+import { startTrackDrag } from '../../utils/trackDrag';
 
 interface TrackListProps {
   tracks: Track[];
@@ -120,17 +121,18 @@ export function TrackList({ tracks, onPlay, sortBy = 'title', onLibraryChanged, 
                 } ${
                   canReorder && dropTarget === row.trackIndex ? 'border-t-2 border-t-neon-purple' : ''
                 }`}
-                draggable={canReorder}
-                onDragStart={
-                  canReorder
-                    ? (e) => {
-                        dragFromRef.current = row.trackIndex;
-                        e.dataTransfer.effectAllowed = 'move';
-                        // A drag with no payload is refused by some engines
-                        e.dataTransfer.setData('text/plain', String(row.trackIndex));
-                      }
-                    : undefined
-                }
+                draggable
+                onDragStart={(e) => {
+                  // Reorder and cross-component drag coexist: reorder reads
+                  // this ref, drop targets read the dataTransfer payload.
+                  if (canReorder) {
+                    dragFromRef.current = row.trackIndex;
+                  }
+                  startTrackDrag(e.dataTransfer, {
+                    trackIds: [track.id],
+                    label: trackDisplayTitle(track),
+                  });
+                }}
                 onDragOver={
                   canReorder
                     ? (e) => {

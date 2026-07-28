@@ -6,6 +6,7 @@ import {
   FIELD_LABELS, isGroupField,
 } from '../../utils/browsePath';
 import { ColumnHeader } from './ColumnHeader';
+import { startTrackDrag } from '../../utils/trackDrag';
 import { GroupContextMenu } from './GroupContextMenu';
 import { RenameGroupModal } from './RenameGroupModal';
 
@@ -68,6 +69,15 @@ export function GroupList({
                   e.preventDefault();
                   setMenu({ group: g, x: e.clientX, y: e.clientY });
                 }}
+                draggable
+                // The whole group travels — this is what gives bulk adds
+                // without a selection model.
+                onDragStart={(e) =>
+                  startTrackDrag(e.dataTransfer, {
+                    trackIds: g.tracks.map((t) => t.id),
+                    label: g.label,
+                  })
+                }
                 className={`flex items-center justify-between px-3 cursor-pointer transition-colors ${
                   active
                     ? 'bg-neon-purple/20 text-white'
