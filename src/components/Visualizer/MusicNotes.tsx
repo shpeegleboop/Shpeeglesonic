@@ -190,7 +190,9 @@ export function MusicNotes({ fftRef, lastUpdateRef, width, height }: MusicNotesP
 
       const data = getDecayedFFT(fftRef, lastUpdateRef) || { bins: new Array(1024).fill(0), rms: 0, time: 0 };
 
-      ctx.fillStyle = 'rgba(10, 10, 20, 0.28)';
+      // Opaque matte black, not a partial fade. The old rgba(10,10,20,0.28)
+      // never reached black and left grey ghost trails behind every glyph.
+      ctx.fillStyle = '#000';
       ctx.fillRect(0, 0, width, height);
 
       // Smooth per-bin energies (smoothing setting = calmer spawning)
