@@ -2,8 +2,15 @@ import { useEffect, useRef, useState } from 'react';
 import { usePlayerStore, VISUALIZER_MODES } from '../../stores/playerStore';
 import { SettingsIcon } from '../Icons';
 
+interface QuickSettingsProps {
+  /** Fade out while the fullscreen view is idle. Ignored when the popover is
+   *  open — vanishing mid-adjustment because the mouse sat still would be
+   *  worse than the clutter it is trying to remove. */
+  hidden?: boolean;
+}
+
 /** Gear button + popover with the visualizer parameters, overlaid on the visualizer itself. */
-export function VisualizerQuickSettings() {
+export function VisualizerQuickSettings({ hidden = false }: QuickSettingsProps) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const mode = usePlayerStore((s) => s.visualizerMode);
@@ -51,7 +58,9 @@ export function VisualizerQuickSettings() {
   return (
     <div
       ref={rootRef}
-      className="absolute top-2 right-2 z-30"
+      className={`absolute top-2 right-2 z-30 transition-opacity duration-500 ${
+        hidden && !open ? 'opacity-0 pointer-events-none' : 'opacity-100'
+      }`}
       onClick={(e) => e.stopPropagation()}
       onDoubleClick={(e) => e.stopPropagation()}
     >

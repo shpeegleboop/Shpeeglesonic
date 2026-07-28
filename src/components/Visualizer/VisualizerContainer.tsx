@@ -23,6 +23,40 @@ export function VisualizerContainer({ inline }: VisualizerContainerProps) {
   const [size, setSize] = useState({ width: 400, height: 200 });
   const mode = usePlayerStore((s) => s.visualizerMode);
   const fullscreen = usePlayerStore((s) => s.visualizerFullscreen);
+
+  // Hide the cursor and the gear after a few seconds of stillness in
+  // fullscreen, so a visualizer left running is just the visualizer.
+  const [idle, setIdle] = useState(false);
+  const idleRef = useRef(false);
+  useEffect(() => {
+    if (!fullscreen) {
+      idleRef.current = false;
+      setIdle(false);
+      return;
+    }
+    let timer = 0;
+    const arm = () => {
+      // Guarded by a ref so a mousemove only triggers a render when it actually
+      // changes something — this fires continuously and the visualizer beneath
+      // it is frame-rate sensitive.
+      if (idleRef.current) {
+        idleRef.current = false;
+        setIdle(false);
+      }
+      clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        idleRef.current = true;
+        setIdle(true);
+      }, 3000);
+    };
+    arm();
+    const events = ['mousemove', 'mousedown', 'wheel', 'keydown'] as const;
+    events.forEach((ev) => window.addEventListener(ev, arm));
+    return () => {
+      clearTimeout(timer);
+      events.forEach((ev) => window.removeEventListener(ev, arm));
+    };
+  }, [fullscreen]);
   const quality = usePlayerStore((s) => s.visualizerSettings.quality);
   const { fftRef, lastUpdateRef } = useFFTData();
 
@@ -90,20 +124,20 @@ export function VisualizerContainer({ inline }: VisualizerContainerProps) {
   if (fullscreen && !inline) {
     return (
       <div
-        className="fixed inset-0 z-50 bg-cosmic-bg cursor-pointer"
+        className={`fixed inset-0 z-50 bg-cosmic-bg ${idle ? 'cursor-none' : 'cursor-pointer'}`}
         onClick={() => usePlayerStore.getState().setVisualizerFullscreen(false)}
       >
         <div ref={containerRef} className="w-full h-full">
           {renderVisualizer()}
         </div>
 
-        <VisualizerQuickSettings />
+        <VisualizerQuickSettings hidden={idle} />
 
         {/* Subtle controls overlay on hover */}
         <div className="absolute bottom-4 left-1/2 -translate-x-1/2 opacity-0 hover:opacity-100 transition-opacity bg-cosmic-panel/80 backdrop-blur-md rounded-lg px-4 py-2 flex items-center gap-4">
           <span className="text-xs text-gray-400">ESC to exit</span>
           <div className="flex gap-1">
-            {VISUALIZER_MODES.map((m, i) => (
+            {VISUALIZER_MODES.map((m) => (
               <button
                 key={m.id}
                 onClick={(e) => {
@@ -114,7 +148,7 @@ export function VisualizerContainer({ inline }: VisualizerContainerProps) {
                   mode === m.id ? 'bg-neon-purple/30 text-neon-purple' : 'text-gray-500 hover:text-white'
                 }`}
               >
-                {i + 1}: {m.label}
+                {m.label}
               </button>
             ))}
           </div>
