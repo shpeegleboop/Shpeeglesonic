@@ -11,13 +11,19 @@ interface MusicNotesProps {
 }
 
 interface Note {
+  /** Drift centre. The drawn x is this plus the sway offset, so the weave is a
+   *  real displacement rather than an integrated velocity that cancels out. */
+  baseX: number;
   x: number;
   y: number;
   vy: number;
+  /** Slow horizontal fan, so a bin's notes stop stacking in one vertical line. */
+  vx: number;
   size: number;
   hue: number;
   swayPhase: number;
   swayAmp: number;
+  swayRate: number;
   rot: number;
   rotV: number;
   life: number;
@@ -52,6 +58,10 @@ export function MusicNotes({ fftRef, lastUpdateRef, width, height }: MusicNotesP
   const notesRef = useRef<Note[]>([]);
   const sparksRef = useRef<Spark[]>([]);
   const smoothBinsRef = useRef<number[]>(new Array(NUM_BINS).fill(0));
+  // Per-bin running peak. Raw FFT magnitude is dominated by bass, so without
+  // normalising each band against its own recent loudness the low bins spawn
+  // nearly every note and the whole display piles into the left third.
+  const peaksRef = useRef<number[]>(new Array(NUM_BINS).fill(0.05));
   const sensitivity = usePlayerStore((s) => s.visualizerSettings.sensitivity);
   const speed = usePlayerStore((s) => s.visualizerSettings.speed);
   const smoothing = usePlayerStore((s) => s.visualizerSettings.smoothing);
@@ -63,7 +73,10 @@ export function MusicNotes({ fftRef, lastUpdateRef, width, height }: MusicNotesP
     const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
     if (!ctx) return;
 
-    const maxNotes = quality === 'low' ? 50 : quality === 'high' ? 200 : 110;
+    // Raised alongside the longer lifetimes: notes now occupy the whole canvas
+    // instead of piling up near the bottom, so the same count reads as far less
+    // crowded and the cap would otherwise throttle spawning.
+    const maxNotes = quality === 'low' ? 60 : quality === 'high' ? 260 : 140;
     const maxSparks = maxNotes * 4;
 
     const spawnNote = (bin: number, energy: number) => {
@@ -71,15 +84,24 @@ export function MusicNotes({ fftRef, lastUpdateRef, width, height }: MusicNotesP
       if (notes.length >= maxNotes) return;
       const frac = bin / (NUM_BINS - 1); // 0 = bass, 1 = air
       // Bass: big slow notes low on screen edge of spectrum; highs: small quick ones
-      const size = (4 + energy * 14) * (1.25 - frac * 0.75);
+      // Trimmed from (4 + energy * 14): at high sensitivity a bass note reached
+      // a ~31px head, and overlapping glyphs that size are what read as a
+      // smudge however far they travel.
+      const size = (3.5 + energy * 9) * (1.2 - frac * 0.65);
+      const baseX = (frac * 0.9 + 0.05) * width + (Math.random() - 0.5) * width * 0.1;
       notes.push({
-        x: (frac * 0.9 + 0.05) * width + (Math.random() - 0.5) * width * 0.04,
+        baseX,
+        x: baseX,
         y: height + size * 2,
-        vy: -(0.6 + energy * 1.4) * (0.7 + frac * 0.9),
+        // Fast enough that a note crosses most of the canvas within its life:
+        // the old speeds carried a bass note under a fifth of the way up.
+        vy: -(1.8 + energy * 2.2) * (0.85 + frac * 0.5),
+        vx: (Math.random() - 0.5) * 0.8,
         size,
         hue: (frac * 260 + 250) % 360,
         swayPhase: Math.random() * Math.PI * 2,
-        swayAmp: 10 + Math.random() * 26,
+        swayAmp: 18 + Math.random() * 46,
+        swayRate: 0.5 + Math.random() * 0.7,
         rot: (Math.random() - 0.5) * 0.4,
         rotV: (Math.random() - 0.5) * 0.012,
         life: 1,
@@ -191,11 +213,23 @@ export function MusicNotes({ fftRef, lastUpdateRef, width, height }: MusicNotesP
         ctx.fillRect(width * 0.05 + i * bw + bw * 0.15, height - barH, bw * 0.7, barH);
       }
 
-      // Frequency-driven spawning — NOT affected by the speed setting
+      // Frequency-driven spawning — NOT affected by the speed setting.
+      // Probability comes from each bin's level relative to its OWN recent
+      // peak, so a busy hi-hat contributes as readily as a kick and notes land
+      // across the full width instead of stacking over the bass.
+      const peaks = peaksRef.current;
       for (let i = 0; i < NUM_BINS; i++) {
         const e = smooth[i];
-        if (e < 0.12) continue;
-        const p = Math.min(0.5, (e - 0.12) * 0.55);
+        // Rises instantly, falls ~26%/s. A slower release left a quiet band
+        // sitting under its own stale peak for ten-plus seconds, which is why
+        // the high bins stayed silent and everything piled up on the left.
+        peaks[i] = Math.max(e, peaks[i] * 0.995);
+        // Absolute floor first: a silent band must not spawn just because its
+        // own peak decayed to nothing.
+        if (e < 0.03) continue;
+        const norm = e / Math.max(0.05, peaks[i]);
+        if (norm < 0.3) continue;
+        const p = Math.min(0.45, (norm - 0.3) * 0.6);
         if (Math.random() < p) spawnNote(i, Math.min(1.5, e));
       }
 
@@ -204,9 +238,14 @@ export function MusicNotes({ fftRef, lastUpdateRef, width, height }: MusicNotesP
       for (let i = notes.length - 1; i >= 0; i--) {
         const n = notes[i];
         n.y += n.vy * speed;
-        n.x += Math.sin(t * 1.6 + n.swayPhase) * n.swayAmp * 0.02 * speed;
+        n.baseX += n.vx * speed;
+        // Sway as an absolute offset from the drift centre. Adding it as a
+        // per-frame velocity made the displacement integrate to well under a
+        // pixel, so the weave was invisible.
+        n.x = n.baseX + Math.sin(t * n.swayRate + n.swayPhase) * n.swayAmp;
         n.rot += n.rotV * speed;
-        n.life -= 0.004 * speed;
+        // Slower decay so notes live long enough to actually climb the canvas.
+        n.life -= 0.0028 * speed;
 
         if (n.y < -n.size * 6) {
           notes.splice(i, 1);
