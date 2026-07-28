@@ -51,22 +51,53 @@ pub fn extract_metadata(path: &str) -> Result<TrackMetadata, String> {
         .unwrap_or("unknown")
         .to_lowercase();
 
-    let tagged_file = Probe::open(path)
-        .map_err(|e| format!("Failed to open for metadata: {}", e))?
-        .read()
-        .map_err(|e| format!("Failed to read metadata: {}", e))?;
+    // lofty cannot parse every container we accept (.mka, and DSD depending on
+    // how it was tagged), and run_scan *drops* any file whose metadata call
+    // returns Err. So a lofty failure must degrade, not propagate — otherwise
+    // widening SUPPORTED_EXTENSIONS would add formats that silently never
+    // appear in the library.
+    let tagged_file = Probe::open(path).and_then(|p| p.read()).ok();
+    let properties = tagged_file.as_ref().map(|t| t.properties());
 
-    let properties = tagged_file.properties();
-    let duration_seconds = Some(properties.duration().as_secs_f64());
-    let bitrate = properties.audio_bitrate().map(|b| b as u32);
-    let sample_rate = properties.sample_rate();
-    let bit_depth = properties.bit_depth().map(|b| b as u32);
-    let channels = properties.channels().map(|c| c as u32);
+    let lofty_duration = properties
+        .map(|p| p.duration().as_secs_f64())
+        .unwrap_or(0.0);
+
+    // Ask ffprobe only when lofty came up short: one spawn per otherwise
+    // unreadable file, and because the scan is incremental it never repeats
+    // for a file already ingested.
+    let ff = if properties.is_none() || lofty_duration <= 0.0 {
+        crate::audio::ffmpeg::probe(path).ok()
+    } else {
+        None
+    };
+
+    let duration_seconds = if lofty_duration > 0.0 {
+        Some(lofty_duration)
+    } else {
+        ff.as_ref()
+            .map(|p| p.duration_seconds)
+            .filter(|d| *d > 0.0)
+    };
+    let bitrate = properties
+        .and_then(|p| p.audio_bitrate())
+        .or_else(|| ff.as_ref().and_then(|p| p.bitrate));
+    let sample_rate = properties
+        .and_then(|p| p.sample_rate())
+        .or_else(|| ff.as_ref().map(|p| p.sample_rate));
+    let bit_depth = properties
+        .and_then(|p| p.bit_depth())
+        .map(|b| b as u32)
+        .or_else(|| ff.as_ref().and_then(|p| p.bit_depth));
+    let channels = properties
+        .and_then(|p| p.channels())
+        .map(|c| c as u32)
+        .or_else(|| ff.as_ref().map(|p| p.channels as u32));
 
     // Try to get tags (primary tag first, then any tag)
     let tag = tagged_file
-        .primary_tag()
-        .or_else(|| tagged_file.first_tag());
+        .as_ref()
+        .and_then(|t| t.primary_tag().or_else(|| t.first_tag()));
 
     let (title, artist, album_artist, album, genre, year, track_number, disc_number, bpm, has_album_art) =
         if let Some(tag) = tag {

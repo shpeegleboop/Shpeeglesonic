@@ -4,8 +4,14 @@ use std::path::Path;
 use crate::audio::metadata;
 use crate::library::db;
 
+/// Everything here is playable: symphonia handles what it can, and the rest
+/// falls through to the bundled ffmpeg (see `decoder::choose_backend`).
 const SUPPORTED_EXTENSIONS: &[&str] = &[
-    "mp3", "flac", "wav", "aiff", "aif", "ogg", "m4a", "aac", "wma", "opus",
+    // Decoded natively by symphonia
+    "mp3", "flac", "wav", "aiff", "aif", "ogg", "m4a", "aac",
+    // Reach the ffmpeg fallback — symphonia either cannot demux these at all
+    // (wma, DSD) or demuxes but has no codec for them (opus)
+    "wma", "opus", "dsf", "dff", "ape", "wv", "mpc", "tta", "m4b", "mka", "caf", "aifc",
 ];
 
 /// An audio file as found on disk, with the stat data the scan diff needs.
@@ -273,6 +279,39 @@ mod tests {
             .iter()
             .map(|(p, size, mtime)| (p.to_string(), KnownRow { size: *size, mtime: *mtime }))
             .collect()
+    }
+
+    #[test]
+    fn accepts_exotic_audiophile_formats() {
+        for ext in ["dsf", "dff", "ape", "wv", "mpc", "tta", "m4b", "mka", "caf", "aifc"] {
+            assert!(
+                SUPPORTED_EXTENSIONS.contains(&ext),
+                "{} should be scannable — ffmpeg can decode it",
+                ext
+            );
+        }
+    }
+
+    #[test]
+    fn still_accepts_the_original_formats() {
+        for ext in ["mp3", "flac", "wav", "aiff", "aif", "ogg", "m4a", "aac", "wma", "opus"] {
+            assert!(SUPPORTED_EXTENSIONS.contains(&ext), "{} regressed", ext);
+        }
+    }
+
+    /// run_scan drops any file whose metadata call errors, so a format lofty
+    /// cannot parse must still come back Ok — otherwise it would be accepted by
+    /// the extension list and then silently never reach the library.
+    #[test]
+    fn unparseable_files_still_yield_metadata_instead_of_an_error() {
+        let path = std::env::temp_dir().join("shpeegle-not-really-audio.mka");
+        std::fs::write(&path, b"this is not a valid matroska file").expect("write temp");
+
+        let meta = crate::audio::metadata::extract_metadata(path.to_str().unwrap())
+            .expect("must degrade rather than error");
+        assert_eq!(meta.title.as_deref(), Some("shpeegle-not-really-audio"));
+
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
