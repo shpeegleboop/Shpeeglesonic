@@ -19,8 +19,12 @@ interface BrowseColumnsProps {
   onLibraryChanged: () => void;
 }
 
-/** Drag handle sitting on a column's right edge. */
-function ResizeHandle({ index }: { index: number }) {
+/**
+ * Drag handle on a column's right edge. Present on every column including the
+ * last — narrowing a lone track column is a legitimate thing to want, and it
+ * simply leaves space to its right rather than trading with a neighbour.
+ */
+function ResizeHandle({ index, straddle }: { index: number; straddle: boolean }) {
   const setWidth = usePlayerStore((s) => s.setBrowseColumnWidth);
   const widths = usePlayerStore((s) => s.browseColumnWidths);
 
@@ -52,7 +56,11 @@ function ResizeHandle({ index }: { index: number }) {
       onMouseDown={onDown}
       onDoubleClick={() => setWidth(index, null)}
       title="Drag to resize, double-click to reset"
-      className="absolute top-0 right-0 h-full w-[5px] translate-x-1/2 z-10 cursor-col-resize hover:bg-neon-purple/40 transition-colors"
+      className={`absolute top-0 right-0 h-full w-[5px] z-10 cursor-col-resize hover:bg-neon-purple/40 transition-colors ${
+        // Straddle the seam between columns, but stay inside the last one so
+        // the handle isn't half-clipped at the edge of the pane.
+        straddle ? 'translate-x-1/2' : ''
+      }`}
     />
   );
 }
@@ -114,8 +122,7 @@ export function BrowseColumns({ tracks, allTracks, onLibraryChanged }: BrowseCol
               onLibraryChanged={onLibraryChanged}
             />
           )}
-          {/* Last column has nothing to its right to trade width with. */}
-          {col.index < columns.length - 1 && <ResizeHandle index={col.index} />}
+          <ResizeHandle index={col.index} straddle={col.index < columns.length - 1} />
         </div>
       ))}
     </div>

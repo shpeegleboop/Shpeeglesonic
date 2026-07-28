@@ -163,16 +163,21 @@ export function groupsOf(tracks: Track[], field: BrowseField): BrowseGroup[] {
   });
 }
 
+/** 0 means "we never read it" for every numeric field here — no track has a
+ *  real duration, BPM or sample rate of zero — so it is absent data, not a low
+ *  value, and must not lead an ascending sort. */
+const numeric = (n: number | null | undefined): number | null => (n ? n : null);
+
 function leafKey(t: Track, field: LeafField): string | number | null {
   switch (field) {
     case 'title':
       return (t.title ?? t.file_name ?? '').toLowerCase();
     case 'bpm':
-      return t.bpm;
+      return numeric(t.bpm);
     case 'duration':
-      return t.duration_seconds;
+      return numeric(t.duration_seconds);
     case 'sample_rate':
-      return t.sample_rate;
+      return numeric(t.sample_rate);
     case 'date_added':
       return t.date_added ?? null;
   }

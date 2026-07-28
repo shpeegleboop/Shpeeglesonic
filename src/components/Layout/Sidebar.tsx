@@ -6,6 +6,7 @@ import { useBrowse } from '../../hooks/useBrowse';
 import { useAudioPlayer } from '../../hooks/useAudioPlayer';
 import { TrackList } from '../Library/TrackList';
 import { GroupList } from '../Library/GroupList';
+import { ColumnHeader } from '../Library/ColumnHeader';
 import { SearchBar } from '../Library/SearchBar';
 import { FIELD_LABELS } from '../../utils/browsePath';
 import { ChevronLeftIcon } from '../Icons';
@@ -59,15 +60,28 @@ export function Sidebar() {
 
       <div className="flex-1 overflow-hidden">
         {deepest?.isLeaf ? (
-          <TrackList
-            tracks={deepest.leafTracks}
-            onLibraryChanged={() => library.fetchTracks()}
-            onPlay={(track) => {
-              const idx = deepest.leafTracks.findIndex((t) => t.id === track.id);
-              usePlayerStore.getState().setQueue(deepest.leafTracks, idx);
-              player.playTrack(track);
-            }}
-          />
+          // Needs its own header: without it the root track column has neither a
+          // dropdown nor a back button, so there is no way out of the flat list
+          // from this tab.
+          <div className="h-full flex flex-col min-h-0">
+            <ColumnHeader
+              field={deepest.field}
+              fields={deepest.fields}
+              onSetField={(f) => setField(deepest.index, f)}
+            />
+            <div className="flex-1 min-h-0">
+              <TrackList
+                tracks={deepest.leafTracks}
+                sortBy={deepest.field}
+                onLibraryChanged={() => library.fetchTracks()}
+                onPlay={(track) => {
+                  const idx = deepest.leafTracks.findIndex((t) => t.id === track.id);
+                  usePlayerStore.getState().setQueue(deepest.leafTracks, idx);
+                  player.playTrack(track);
+                }}
+              />
+            </div>
+          </div>
         ) : (
           deepest && (
             <GroupList

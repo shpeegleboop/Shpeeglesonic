@@ -180,6 +180,18 @@ describe('sortTracks', () => {
     expect(sortTracks(mixed, 'duration', 'desc')[2].id).toBe(3);
   });
 
+  // A failed probe writes 0, not null. Treating it as a real value put every
+  // unreadable track at the top of an ascending sample-rate sort.
+  it('treats a zero numeric as absent, not as the smallest value', () => {
+    const withZeros = [
+      track({ id: 1, sample_rate: 44100 }),
+      track({ id: 2, sample_rate: 0 }),
+      track({ id: 3, sample_rate: 22050 }),
+    ];
+    expect(sortTracks(withZeros, 'sample_rate', 'asc').map((t) => t.id)).toEqual([3, 1, 2]);
+    expect(sortTracks(withZeros, 'sample_rate', 'desc').map((t) => t.id)).toEqual([1, 3, 2]);
+  });
+
   it('does not mutate its input', () => {
     const before = mixed.map((t) => t.id);
     sortTracks(mixed, 'title', 'desc');
