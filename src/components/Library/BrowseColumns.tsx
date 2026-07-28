@@ -7,9 +7,20 @@ import { ColumnHeader } from './ColumnHeader';
 import { TrackList } from './TrackList';
 import { type BrowseField } from '../../utils/browsePath';
 
-/** Defaults when a column has never been dragged. */
-const GROUP_DEFAULT_W = 220;
-const MIN_W = 140;
+/**
+ * Defaults when a column has never been dragged, in rem so they grow with the
+ * interface-size setting. Hardcoded px left 200% text crammed into a 220px
+ * column, truncating almost every row.
+ */
+const GROUP_DEFAULT_REM = 13.75; // 220px at the default root size
+const LEAF_MIN_REM = 20; // 320px at the default root size
+const MIN_REM = 8.75; // 140px at the default root size
+
+/** Explicit widths are stored in px, so the drag floor has to be converted. */
+function remToPx(rem: number): number {
+  const root = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+  return rem * root;
+}
 
 interface BrowseColumnsProps {
   /** Search-filtered list, used for grouping and leaf contents. */
@@ -34,10 +45,11 @@ function ResizeHandle({ index, straddle }: { index: number; straddle: boolean })
     const startW =
       widths[index] ??
       (e.currentTarget.parentElement as HTMLElement | null)?.getBoundingClientRect().width ??
-      GROUP_DEFAULT_W;
+      remToPx(GROUP_DEFAULT_REM);
+    const floor = remToPx(MIN_REM);
 
     const move = (ev: MouseEvent) =>
-      setWidth(index, Math.max(MIN_W, Math.round(startW + ev.clientX - startX)));
+      setWidth(index, Math.max(floor, Math.round(startW + ev.clientX - startX)));
     const up = () => {
       window.removeEventListener('mousemove', move);
       window.removeEventListener('mouseup', up);
@@ -80,12 +92,17 @@ export function BrowseColumns({ tracks, allTracks, onLibraryChanged }: BrowseCol
 
   const styleFor = (col: BrowseColumnModel) => {
     const w = widths[col.index];
+    // An explicitly dragged width is absolute — the user picked those pixels.
     if (w) return { width: w, minWidth: w, flex: '0 0 auto' as const };
     // Untouched track columns absorb the leftover space — with only "Track
     // Title" open that means the full width, which is the point.
     return col.isLeaf
-      ? { flex: '1 1 0%', minWidth: 320 }
-      : { width: GROUP_DEFAULT_W, minWidth: GROUP_DEFAULT_W, flex: '0 0 auto' as const };
+      ? { flex: '1 1 0%', minWidth: `${LEAF_MIN_REM}rem` }
+      : {
+          width: `${GROUP_DEFAULT_REM}rem`,
+          minWidth: `${GROUP_DEFAULT_REM}rem`,
+          flex: '0 0 auto' as const,
+        };
   };
 
   return (

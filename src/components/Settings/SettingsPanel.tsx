@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core';
 import { useLibrary } from '../../hooks/useLibrary';
-import { usePlayerStore } from '../../stores/playerStore';
+import { usePlayerStore, FONT_SCALES, type FontScale } from '../../stores/playerStore';
 import { DuplicatesModal } from '../Library/DuplicatesModal';
 import { ConfirmDialog } from '../ConfirmDialog';
 
@@ -10,6 +10,8 @@ export function SettingsPanel() {
   const library = useLibrary();
   const vizSettings = usePlayerStore((s) => s.visualizerSettings);
   const updateViz = usePlayerStore((s) => s.updateVisualizerSettings);
+  const fontScale = usePlayerStore((s) => s.fontScale);
+  const setFontScale = usePlayerStore((s) => s.setFontScale);
   const scanProgress = usePlayerStore((s) => s.scanProgress);
   const [scanStatus, setScanStatus] = useState<{ ok: boolean; text: string } | null>(null);
   const [showDuplicates, setShowDuplicates] = useState(false);
@@ -234,6 +236,29 @@ export function SettingsPanel() {
               <option value="high">High</option>
             </select>
           </div>
+        </div>
+      </section>
+
+      {/* Appearance */}
+      <section>
+        <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-3">Appearance</h2>
+        <div className="glass-panel p-4">
+          <label className="text-sm text-gray-400 block mb-1">Interface size</label>
+          <select
+            value={fontScale}
+            onChange={(e) => setFontScale(e.target.value as FontScale)}
+            className="bg-cosmic-bg border border-cosmic-border rounded px-3 py-1.5 text-sm w-full"
+          >
+            {FONT_SCALES.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.label}
+                {s.percent !== 100 ? ` — ${s.percent}%` : ''}
+              </option>
+            ))}
+          </select>
+          <p className="text-xs text-gray-500 mt-1">
+            Scales the whole interface, not just text, so controls grow with the type.
+          </p>
         </div>
       </section>
 

@@ -88,6 +88,19 @@ export interface TrackInfo {
 }
 
 export type RepeatMode = 'off' | 'all' | 'one';
+
+export type FontScale = 'default' | 'bigger' | 'biggest';
+
+/**
+ * Applied as the root font-size. Tailwind sizes everything in rem, so this
+ * scales spacing and controls along with the text rather than leaving big type
+ * crammed into small boxes.
+ */
+export const FONT_SCALES: { id: FontScale; label: string; percent: number }[] = [
+  { id: 'default', label: 'Default', percent: 100 },
+  { id: 'bigger', label: 'Bigger', percent: 150 },
+  { id: 'biggest', label: 'Biggest', percent: 200 },
+];
 export type ViewMode = 'nowPlaying' | 'library' | 'playlist' | 'settings' | 'visualizer';
 export type VisualizerType =
   | 'spectrogram'
@@ -178,6 +191,9 @@ interface PlayerState {
    *  column keeps its size as you browse sideways. Absent = use the default. */
   browseColumnWidths: Record<number, number>;
 
+  fontScale: FontScale;
+  setFontScale: (scale: FontScale) => void;
+
   // Actions
   setCurrentTrack: (track: Track | null) => void;
   setTrackInfo: (info: TrackInfo | null) => void;
@@ -257,6 +273,7 @@ export const usePlayerStore = create<PlayerState>()(
   browseSortOrder: 'asc' as const,
   browseSearch: '',
   browseColumnWidths: {} as Record<number, number>,
+  fontScale: 'default' as FontScale,
   lyricsVisible: false,
   queueVisible: true,
   currentView: 'nowPlaying',
@@ -473,6 +490,7 @@ export const usePlayerStore = create<PlayerState>()(
   setSidebarCollapsed: (collapsed) => set({ sidebarCollapsed: collapsed }),
   setBrowsePath: (browsePath) => set({ browsePath }),
   setBrowseSortOrder: (browseSortOrder) => set({ browseSortOrder }),
+  setFontScale: (fontScale) => set({ fontScale }),
   setBrowseColumnWidth: (index, width) =>
     set((s) => {
       const next = { ...s.browseColumnWidths };
@@ -522,6 +540,7 @@ export const usePlayerStore = create<PlayerState>()(
         browseSortOrder: s.browseSortOrder,
         browseSearch: s.browseSearch,
         browseColumnWidths: s.browseColumnWidths,
+        fontScale: s.fontScale,
       }),
       // Deep-merge visualizerSettings so new fields keep their defaults
       // when restoring state saved by an older version

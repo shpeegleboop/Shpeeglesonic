@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { usePlayerStore, TrackInfo } from './stores/playerStore';
+import { usePlayerStore, TrackInfo, FONT_SCALES } from './stores/playerStore';
 import { QueueSidebar } from './components/Queue/QueueSidebar';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { TopNav } from './components/Layout/TopNav';
@@ -43,8 +43,17 @@ function App() {
   const currentView = usePlayerStore((s) => s.currentView);
   const visualizerFullscreen = usePlayerStore((s) => s.visualizerFullscreen);
   const lyricsVisible = usePlayerStore((s) => s.lyricsVisible);
+  const fontScale = usePlayerStore((s) => s.fontScale);
 
   useKeyboardShortcuts();
+
+  // Root font-size drives everything, because Tailwind sizes in rem — text,
+  // padding and control heights scale together instead of leaving big type
+  // crammed into small boxes.
+  useEffect(() => {
+    const pct = FONT_SCALES.find((s) => s.id === fontScale)?.percent ?? 100;
+    document.documentElement.style.fontSize = `${pct}%`;
+  }, [fontScale]);
 
   // Fullscreen visualizer = real OS fullscreen, not just filling the window
   useEffect(() => {

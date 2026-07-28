@@ -16,6 +16,9 @@ import {
   MusicNoteIcon,
   QueueIcon,
   WaveIcon,
+  ShuffleIcon,
+  RepeatIcon,
+  RepeatOneIcon,
 } from '../Icons';
 
 export function BottomBar() {
@@ -26,6 +29,8 @@ export function BottomBar() {
   const volume = usePlayerStore((s) => s.volume);
   const isMuted = usePlayerStore((s) => s.isMuted);
   const queueVisible = usePlayerStore((s) => s.queueVisible);
+  const shuffleEnabled = usePlayerStore((s) => s.shuffleEnabled);
+  const repeatMode = usePlayerStore((s) => s.repeatMode);
   const [dropActive, setDropActive] = useState(false);
 
   const dropPlayNext = (e: React.DragEvent) => {
@@ -114,8 +119,19 @@ export function BottomBar() {
         )}
       </div>
 
-      {/* Transport controls */}
+      {/* Transport controls — shuffle and repeat straddle the transport, same
+          arrangement and active styling as the Now Playing page. */}
       <div className="flex items-center gap-1.5 flex-shrink-0">
+        <button
+          onClick={() => usePlayerStore.getState().toggleShuffle()}
+          className={`btn-ghost relative ${shuffleEnabled ? 'text-neon-purple bg-neon-purple/15' : 'text-gray-500'}`}
+          title={`Shuffle (S)${shuffleEnabled ? ' - ON' : ''}`}
+        >
+          <ShuffleIcon size={14} />
+          {shuffleEnabled && (
+            <span className="absolute bottom-0.5 left-1/2 -translate-x-1/2 w-1 h-1 rounded-full bg-neon-purple" />
+          )}
+        </button>
         <button onClick={player.playPrevTrack} className="btn-ghost" title="Previous (P)">
           <PrevIcon size={16} />
         </button>
@@ -128,6 +144,16 @@ export function BottomBar() {
         </button>
         <button onClick={player.playNextTrack} className="btn-ghost" title="Next (N)">
           <NextIcon size={16} />
+        </button>
+        <button
+          onClick={() => usePlayerStore.getState().cycleRepeatMode()}
+          className={`btn-ghost relative ${repeatMode !== 'off' ? 'text-neon-purple bg-neon-purple/15' : 'text-gray-500'}`}
+          title={`Repeat (R) - ${repeatMode.toUpperCase()}`}
+        >
+          {repeatMode === 'one' ? <RepeatOneIcon size={14} /> : <RepeatIcon size={14} />}
+          {repeatMode !== 'off' && (
+            <span className="absolute bottom-0.5 left-1/2 -translate-x-1/2 w-1 h-1 rounded-full bg-neon-purple" />
+          )}
         </button>
       </div>
 
