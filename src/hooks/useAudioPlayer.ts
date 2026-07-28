@@ -38,6 +38,7 @@ export function useAudioPlayer() {
         id: 0,
         file_path: path,
         file_name: fileName,
+        date_added: null,
         title: fileName.replace(/\.[^.]+$/, '') || null,
         artist: null,
         album_artist: null,

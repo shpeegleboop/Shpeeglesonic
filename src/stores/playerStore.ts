@@ -72,6 +72,9 @@ export interface Track {
   play_count: number;
   favorited: boolean;
   dup_flag: boolean;
+  /** ISO-ish timestamp from SQLite. Present so "Date Added" sorts client-side
+   *  like every other column instead of needing a round trip. */
+  date_added: string | null;
   /** Frontend-only annotation used by the library's "Playlist" grouping */
   playlist_label?: string;
 }
@@ -171,9 +174,11 @@ interface PlayerState {
    * group by. Conflating them wrote a non-groupable field into browsePath and
    * white-screened the app on launch.
    */
-  browseSortBy: string;
   browseSortOrder: 'asc' | 'desc';
   browseSearch: string;
+  /** Per-depth column widths in px. Keyed by column index, not by field, so a
+   *  column keeps its size as you browse sideways. Absent = use the default. */
+  browseColumnWidths: Record<number, number>;
 
   // Actions
   setCurrentTrack: (track: Track | null) => void;
@@ -200,8 +205,8 @@ interface PlayerState {
   setArtZoomVisible: (v: boolean) => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
   setBrowsePath: (path: BrowseStep[]) => void;
-  setBrowseSortBy: (by: string) => void;
   setBrowseSortOrder: (order: 'asc' | 'desc') => void;
+  setBrowseColumnWidth: (index: number, width: number | null) => void;
   setBrowseSearch: (q: string) => void;
   setCurrentView: (view: ViewMode) => void;
   setLyricsVisible: (visible: boolean) => void;
@@ -250,9 +255,9 @@ export const usePlayerStore = create<PlayerState>()(
 
   sidebarCollapsed: false,
   browsePath: defaultPath('artist'),
-  browseSortBy: 'artist',
   browseSortOrder: 'asc' as const,
   browseSearch: '',
+  browseColumnWidths: {} as Record<number, number>,
   lyricsVisible: false,
   queueVisible: true,
   currentView: 'nowPlaying',
@@ -442,8 +447,15 @@ export const usePlayerStore = create<PlayerState>()(
   setArtZoomVisible: (v) => set({ artZoomVisible: v }),
   setSidebarCollapsed: (collapsed) => set({ sidebarCollapsed: collapsed }),
   setBrowsePath: (browsePath) => set({ browsePath }),
-  setBrowseSortBy: (browseSortBy) => set({ browseSortBy }),
   setBrowseSortOrder: (browseSortOrder) => set({ browseSortOrder }),
+  setBrowseColumnWidth: (index, width) =>
+    set((s) => {
+      const next = { ...s.browseColumnWidths };
+      // null clears the override so the column returns to its default size.
+      if (width === null) delete next[index];
+      else next[index] = width;
+      return { browseColumnWidths: next };
+    }),
   setBrowseSearch: (browseSearch) => set({ browseSearch }),
   setCurrentView: (view) => set({ currentView: view }),
   setLyricsVisible: (visible) => set({ lyricsVisible: visible }),
@@ -482,9 +494,9 @@ export const usePlayerStore = create<PlayerState>()(
         // A few hundred bytes next to the queue — no impact on the throttled
         // write budget, and worth keeping so you reopen where you left off.
         browsePath: s.browsePath,
-        browseSortBy: s.browseSortBy,
         browseSortOrder: s.browseSortOrder,
         browseSearch: s.browseSearch,
+        browseColumnWidths: s.browseColumnWidths,
       }),
       // Deep-merge visualizerSettings so new fields keep their defaults
       // when restoring state saved by an older version

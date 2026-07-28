@@ -7,7 +7,7 @@ import { useAudioPlayer } from '../../hooks/useAudioPlayer';
 import { TrackList } from '../Library/TrackList';
 import { GroupList } from '../Library/GroupList';
 import { SearchBar } from '../Library/SearchBar';
-import { GROUP_FIELD_LABELS } from '../../utils/browsePath';
+import { FIELD_LABELS } from '../../utils/browsePath';
 import { ChevronLeftIcon } from '../Icons';
 
 export function Sidebar() {
@@ -28,17 +28,14 @@ export function Sidebar() {
   // each. The breadcrumb walks back up instead.
   const deepest = columns[columns.length - 1];
 
-  // The track list is a derived column with no path step of its own, so going
-  // back from it means clearing the deepest step's value (returning to the
-  // album list), not popping a step off.
-  const backIndex = deepest?.isLeaf ? path.length - 1 : (deepest?.index ?? 0) - 1;
+  // Every column is a path step, leaf included, so going back is uniformly
+  // "drop this column and clear the one above".
+  const backIndex = (deepest?.index ?? 0) - 1;
   const canGoBack = backIndex >= 0;
-  // What we'd return to, plus the selection currently pinning this view — the
+  // What we'd return to, plus the selection pinning the current view — the
   // sidebar shows one column, so that context isn't visible anywhere else.
-  const backField = canGoBack ? GROUP_FIELD_LABELS[path[backIndex].field] : '';
-  const pinned = deepest?.isLeaf
-    ? path[path.length - 1]?.value
-    : path[backIndex]?.value;
+  const backField = canGoBack ? FIELD_LABELS[path[backIndex].field] : '';
+  const pinned = canGoBack ? path[backIndex]?.value : null;
 
   return (
     <aside className="w-72 flex flex-col bg-cosmic-surface border-r border-cosmic-border/50 overflow-hidden">

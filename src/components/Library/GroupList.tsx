@@ -2,22 +2,23 @@ import { useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { type BrowseColumnModel } from '../../hooks/useBrowse';
 import {
-  type BrowseGroup, type GroupField,
-  GROUP_FIELD_LABELS,
+  type BrowseGroup, type BrowseField,
+  FIELD_LABELS, isGroupField,
 } from '../../utils/browsePath';
-import { FieldDropdown } from './FieldDropdown';
+import { ColumnHeader } from './ColumnHeader';
 import { GroupContextMenu } from './GroupContextMenu';
 import { RenameGroupModal } from './RenameGroupModal';
 
 /** RenameGroupModal only accepts fields backed by a real, editable tag. */
 type RenameField = 'artist' | 'album' | 'genre';
-const RENAMEABLE: GroupField[] = ['artist', 'album', 'genre'];
-const isRenameable = (f: GroupField): f is RenameField => RENAMEABLE.includes(f);
+const RENAMEABLE: BrowseField[] = ['artist', 'album', 'genre'];
+const isRenameable = (f: BrowseField): f is RenameField =>
+  isGroupField(f) && RENAMEABLE.includes(f);
 
 interface GroupListProps {
   column: BrowseColumnModel;
   onSelect: (value: string | null) => void;
-  onSetField: (field: GroupField) => void;
+  onSetField: (field: BrowseField) => void;
   onLibraryChanged: () => void;
   /** Caller owns width: fixed per-column on Library, full-width in the sidebar. */
   className?: string;
@@ -47,14 +48,7 @@ export function GroupList({
 
   return (
     <div className={`flex flex-col h-full border-r border-cosmic-border/30 ${className}`}>
-      <div className="p-2 border-b border-cosmic-border/30 flex">
-        <FieldDropdown
-          value={column.field}
-          options={fields.map((f) => ({ value: f, label: GROUP_FIELD_LABELS[f] }))}
-          onChange={(v) => onSetField(v as GroupField)}
-          ariaLabel="Group by"
-        />
-      </div>
+      <ColumnHeader field={column.field} fields={fields} onSetField={onSetField} />
 
       <div ref={parentRef} className="flex-1 overflow-y-auto">
         <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
@@ -93,7 +87,7 @@ export function GroupList({
           label={menu.group.label}
           tracks={menu.group.tracks}
           canRename={isRenameable(column.field) && menu.group.value !== null}
-          renameLabel={GROUP_FIELD_LABELS[column.field]}
+          renameLabel={FIELD_LABELS[column.field]}
           x={menu.x}
           y={menu.y}
           onClose={() => setMenu(null)}

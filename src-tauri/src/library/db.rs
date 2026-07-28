@@ -254,6 +254,10 @@ pub struct Track {
     /// True when another visible track shares this title+artist and this
     /// track hasn't had its metadata reviewed yet ("d!?" badge in the UI).
     pub dup_flag: bool,
+    /// Needed on the frontend so "Date Added" can be sorted client-side like
+    /// every other column, rather than being the one sort that requires a
+    /// round trip to SQL.
+    pub date_added: Option<String>,
 }
 
 /// How far two runtimes may drift and still be the same recording.
@@ -393,7 +397,7 @@ pub fn get_tracks(
         "SELECT id, file_path, file_name, title, artist, album_artist, album, genre,
                 year, track_number, disc_number, bpm, duration_seconds, format,
                 bitrate, sample_rate, bit_depth, channels, has_album_art, art_path,
-                album_art_color, play_count, favorited, {} as dup_flag
+                album_art_color, play_count, favorited, {} as dup_flag, date_added
          FROM tracks t
          WHERE duplicate_of IS NULL{}
          ORDER BY {} {}",
@@ -445,6 +449,7 @@ fn map_track_row(row: &rusqlite::Row) -> rusqlite::Result<Track> {
         play_count: row.get(21)?,
         favorited: row.get::<_, i32>(22)? != 0,
         dup_flag: row.get::<_, i32>(23).unwrap_or(0) != 0,
+        date_added: row.get(24).ok(),
     })
 }
 
@@ -642,7 +647,7 @@ pub fn get_duplicate_candidates(conn: &Connection) -> Result<Vec<DuplicateCandid
         "SELECT id, file_path, file_name, title, artist, album_artist, album, genre,
                 year, track_number, disc_number, bpm, duration_seconds, format,
                 bitrate, sample_rate, bit_depth, channels, has_album_art, art_path,
-                album_art_color, play_count, favorited, {} as dup_flag,
+                album_art_color, play_count, favorited, {} as dup_flag, date_added,
                 (t.duplicate_of IS NOT NULL) as hidden
          FROM tracks t
          WHERE t.id IN ({})",
@@ -656,7 +661,8 @@ pub fn get_duplicate_candidates(conn: &Connection) -> Result<Vec<DuplicateCandid
             let group_id = *group_of.get(&track.id).unwrap_or(&track.id);
             Ok(DuplicateCandidate {
                 track,
-                hidden: row.get::<_, i32>(24)? != 0,
+                // Index 25, not 24: date_added was added to the SELECT above.
+                hidden: row.get::<_, i32>(25)? != 0,
                 group_id,
             })
         })
@@ -1090,7 +1096,8 @@ pub fn get_playlist_tracks(conn: &Connection, playlist_id: i64) -> Result<Vec<Tr
         "SELECT t.id, t.file_path, t.file_name, t.title, t.artist, t.album_artist, t.album,
                 t.genre, t.year, t.track_number, t.disc_number, t.bpm, t.duration_seconds,
                 t.format, t.bitrate, t.sample_rate, t.bit_depth, t.channels, t.has_album_art,
-                t.art_path, t.album_art_color, t.play_count, t.favorited, {} as dup_flag
+                t.art_path, t.album_art_color, t.play_count, t.favorited, {} as dup_flag,
+                t.date_added
          FROM tracks t
          JOIN playlist_tracks pt ON t.id = pt.track_id
          WHERE pt.playlist_id = ?1

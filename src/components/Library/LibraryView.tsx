@@ -4,7 +4,6 @@ import { usePlaylistGrouping } from '../../hooks/usePlaylistGrouping';
 import { useLibrary } from '../../hooks/useLibrary';
 import { BrowseColumns } from './BrowseColumns';
 import { SearchBar } from './SearchBar';
-import { SortControls } from './SortControls';
 import { PlaylistSidebar } from '../Playlist/PlaylistSidebar';
 import { PlaylistView } from '../Playlist/PlaylistView';
 
@@ -28,9 +27,8 @@ export function LibraryView() {
       <div className="flex-1 flex flex-col overflow-hidden">
         {selectedPlaylistId === null || isFavorites ? (
           <>
-            <div className="p-2 space-y-2 border-b border-cosmic-border/30">
+            <div className="p-2 border-b border-cosmic-border/30">
               <SearchBar value={library.searchQuery} onChange={library.updateSearch} />
-              <SortControls sortBy={library.sortBy} sortOrder={library.sortOrder} onSort={library.updateSort} />
             </div>
             <div className="flex-1 overflow-hidden flex">
               <BrowseColumns

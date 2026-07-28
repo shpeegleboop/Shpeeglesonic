@@ -30,7 +30,10 @@ export function useLibrary() {
   // Sort and search live in the store, not in local state. They used to be
   // useState here, which meant LibraryView and Sidebar each held their own copy
   // and neither view ever reflected the other.
-  const sortBy = usePlayerStore((s) => s.browseSortBy);
+  // The SQL sort is fixed: ordering is a per-column concern now (a leaf column
+  // orders by its own field, group columns sort their labels), so the query
+  // just needs to be deterministic.
+  const sortBy = 'artist';
   const sortOrder = usePlayerStore((s) => s.browseSortOrder);
   const searchQuery = usePlayerStore((s) => s.browseSearch);
 
@@ -116,18 +119,12 @@ export function useLibrary() {
     }
   }, [fetchTracks, fetchFolders]);
 
-  const updateSort = useCallback((by: string, order?: string) => {
+  /** Only the direction now — which field to order by is the leaf column's
+   *  own field, chosen from its dropdown. */
+  const toggleSortOrder = useCallback(() => {
     const st = usePlayerStore.getState();
-    const newOrder = (order || (by === sortBy && sortOrder === 'asc' ? 'desc' : 'asc')) as 'asc' | 'desc';
-    st.setBrowseSortBy(by);
-    st.setBrowseSortOrder(newOrder);
-    // Deliberately does NOT touch browsePath. Sorting and grouping are separate
-    // concerns: the sort list offers Title, BPM, Duration and friends, none of
-    // which anything can group by. Writing one into browsePath is what made
-    // getGroupValue return undefined and blank the window on launch. Grouping
-    // is changed only through a column's own dropdown.
-    fetchTracks(by, newOrder);
-  }, [sortBy, sortOrder, fetchTracks]);
+    st.setBrowseSortOrder(st.browseSortOrder === 'asc' ? 'desc' : 'asc');
+  }, []);
 
   // Search is a pure view concern now: no IPC, no SQL, no debounce needed.
   // The old implementation refetched on every keystroke, which at 4000 tracks
@@ -155,7 +152,7 @@ export function useLibrary() {
     scanFolder,
     quickScan,
     removeFolder,
-    updateSort,
+    toggleSortOrder,
     updateSearch,
   };
 }

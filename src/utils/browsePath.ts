@@ -1,14 +1,24 @@
 import { type Track } from '../stores/playerStore';
 
+/** Fields you can break the library down by — each opens another column. */
 export type GroupField = 'artist' | 'album' | 'genre' | 'year' | 'format' | 'playlist';
+
+/**
+ * Fields that end a chain. Nothing can be nested under "duration" or "BPM", so
+ * choosing one shows the tracks themselves, ordered by that field. They are all
+ * the same track list wearing a different ordering.
+ */
+export type LeafField = 'title' | 'bpm' | 'duration' | 'date_added' | 'sample_rate';
+
+export type BrowseField = GroupField | LeafField;
 
 /** One column: how it groups, and what is selected in it. */
 export interface BrowseStep {
-  field: GroupField;
+  field: BrowseField;
   /**
-   * null means either "nothing selected yet" or the Unknown bucket, depending
-   * on position — a step is only applied as a filter when it sits above the
-   * column being rendered.
+   * For a grouping column: the selected value, or null for "nothing picked
+   * yet". A null that sits ABOVE the column being rendered means the Unknown
+   * bucket. Leaf columns always carry null — they have nothing to select.
    */
   value: string | null;
 }
@@ -22,29 +32,41 @@ export interface BrowseGroup {
 }
 
 export const GROUP_FIELDS: GroupField[] = ['artist', 'album', 'genre', 'year', 'format', 'playlist'];
+export const LEAF_FIELDS: LeafField[] = ['title', 'bpm', 'duration', 'date_added', 'sample_rate'];
 
-export const GROUP_FIELD_LABELS: Record<GroupField, string> = {
+export const FIELD_LABELS: Record<BrowseField, string> = {
   artist: 'Artist',
   album: 'Album',
   genre: 'Genre',
   year: 'Year',
   format: 'Format',
   playlist: 'Playlist',
+  title: 'Track Title',
+  bpm: 'BPM',
+  duration: 'Duration',
+  date_added: 'Date Added',
+  sample_rate: 'Sample Rate',
 };
 
 export function isGroupField(f: unknown): f is GroupField {
   return typeof f === 'string' && (GROUP_FIELDS as string[]).includes(f);
 }
 
+export function isLeafField(f: unknown): f is LeafField {
+  return typeof f === 'string' && (LEAF_FIELDS as string[]).includes(f);
+}
+
+export function isBrowseField(f: unknown): f is BrowseField {
+  return isGroupField(f) || isLeafField(f);
+}
+
 /**
- * Moved from TrackList.tsx, which is no longer its caller.
- *
  * The default case is load-bearing, not defensive padding: persisted state can
  * carry a field that is no longer valid, and returning undefined here meant
  * destructuring it threw during render, which unmounts the entire React tree
  * and leaves a black window with no clue why.
  */
-export function getGroupValue(track: Track, field: GroupField): { value: string | null; label: string } {
+export function getGroupValue(track: Track, field: BrowseField): { value: string | null; label: string } {
   switch (field) {
     case 'artist':
       return { value: track.artist ?? null, label: track.artist || 'Unknown Artist' };
@@ -64,47 +86,42 @@ export function getGroupValue(track: Track, field: GroupField): { value: string 
 }
 
 /**
- * The default drill-down chain. A column carries its own field, so changing a
- * column's grouping overrides this from that column down.
+ * What a column offers next, in preference order. The first entry not already
+ * used above wins, so genre -> artist -> album -> tracks, and if artist is
+ * already pinned then genre goes straight to album.
  */
-const CHAIN: Record<GroupField, GroupField | null> = {
-  genre: 'artist',
-  year: 'artist',
-  format: 'artist',
-  playlist: 'artist',
-  artist: 'album',
-  album: null,
+const PREFERRED_AFTER: Record<GroupField, BrowseField[]> = {
+  genre: ['artist', 'album', 'title'],
+  year: ['artist', 'album', 'title'],
+  format: ['artist', 'album', 'title'],
+  playlist: ['artist', 'album', 'title'],
+  artist: ['album', 'title'],
+  album: ['title'],
 };
 
-export function nextField(current: GroupField): GroupField | null {
-  return CHAIN[current];
-}
-
 /**
- * Fields a column may group by: everything except those an ancestor column has
- * already pinned to a single value. Re-grouping Radiohead's tracks by artist
- * yields one group called "Radiohead", and selecting it appends another
- * identical column — forever. Excluding used fields makes that unreachable
- * rather than merely discouraged.
+ * The field for the column after `index`, skipping any the path already uses.
+ * Null when `index` is a leaf — nothing follows a track list.
  */
-export function availableFieldsFor(path: BrowseStep[], index: number): GroupField[] {
-  const used = new Set(path.slice(0, index).map((s) => s.field));
-  return GROUP_FIELDS.filter((f) => !used.has(f));
-}
-
-/**
- * The next field after column `index`, skipping any the path already uses.
- * Returns null when the chain is exhausted, which is what makes a column the
- * last one before tracks.
- */
-export function nextFieldFor(path: BrowseStep[], index: number): GroupField | null {
+export function nextFieldFor(path: BrowseStep[], index: number): BrowseField | null {
+  const step = path[index];
+  if (!step || isLeafField(step.field)) return null;
   const used = new Set(path.slice(0, index + 1).map((s) => s.field));
-  let f = nextField(path[index].field);
-  while (f && used.has(f)) f = nextField(f);
-  return f;
+  return PREFERRED_AFTER[step.field as GroupField].find((f) => !used.has(f)) ?? null;
 }
 
-export function defaultPath(root: GroupField = 'artist'): BrowseStep[] {
+/**
+ * Fields a column may group by: grouping fields not already pinned by an
+ * ancestor, plus every leaf field. Excluding used grouping fields is what makes
+ * artist > artist > artist unreachable rather than merely discouraged — it
+ * yields one group and clicking it appends another identical column forever.
+ */
+export function availableFieldsFor(path: BrowseStep[], index: number): BrowseField[] {
+  const used = new Set(path.slice(0, index).map((s) => s.field));
+  return [...GROUP_FIELDS.filter((f) => !used.has(f)), ...LEAF_FIELDS];
+}
+
+export function defaultPath(root: BrowseField = 'artist'): BrowseStep[] {
   return [{ field: root, value: null }];
 }
 
@@ -113,22 +130,20 @@ export function defaultPath(root: GroupField = 'artist'): BrowseStep[] {
  * `upTo` is a count of steps to apply, so column 0 applies none.
  */
 export function filterByPath(tracks: Track[], path: BrowseStep[], upTo: number): Track[] {
-  const steps = path.slice(0, upTo);
+  const steps = path.slice(0, upTo).filter((s) => isGroupField(s.field));
   if (steps.length === 0) return tracks;
   return tracks.filter((t) => steps.every((s) => getGroupValue(t, s.field).value === s.value));
 }
 
-/**
- * Map key for the Unknown bucket. Real values are prefixed "v:" so a group
- * genuinely named "u:unknown" can never collide with it.
- */
+/** Map key for the Unknown bucket. Real values are prefixed so a group
+ *  genuinely named "u:unknown" can never collide with it. */
 const UNKNOWN_KEY = 'u:unknown';
 
-export function groupsOf(tracks: Track[], field: GroupField): BrowseGroup[] {
+export function groupsOf(tracks: Track[], field: BrowseField): BrowseGroup[] {
+  if (!isGroupField(field)) return [];
   const byValue = new Map<string, BrowseGroup>();
   for (const t of tracks) {
     const { value, label } = getGroupValue(t, field);
-    // Keys must distinguish a null value from the literal string "null".
     const key = value === null ? UNKNOWN_KEY : 'v:' + value;
     let g = byValue.get(key);
     if (!g) {
@@ -138,7 +153,46 @@ export function groupsOf(tracks: Track[], field: GroupField): BrowseGroup[] {
     g.count += 1;
     g.tracks.push(t);
   }
-  return [...byValue.values()];
+
+  // Sorted explicitly rather than inheriting the incoming track order, which is
+  // whatever SQL returned and would put artists in title order.
+  return [...byValue.values()].sort((a, b) => {
+    if (a.value === null) return 1; // Unknown always last
+    if (b.value === null) return -1;
+    return a.label.localeCompare(b.label, undefined, { numeric: true, sensitivity: 'base' });
+  });
+}
+
+function leafKey(t: Track, field: LeafField): string | number | null {
+  switch (field) {
+    case 'title':
+      return (t.title ?? t.file_name ?? '').toLowerCase();
+    case 'bpm':
+      return t.bpm;
+    case 'duration':
+      return t.duration_seconds;
+    case 'sample_rate':
+      return t.sample_rate;
+    case 'date_added':
+      return t.date_added ?? null;
+  }
+}
+
+/** Order a track list by a leaf field. Untagged tracks sink to the bottom
+ *  regardless of direction — they are absent data, not a low value. */
+export function sortTracks(tracks: Track[], field: LeafField, order: 'asc' | 'desc'): Track[] {
+  const dir = order === 'desc' ? -1 : 1;
+  return [...tracks].sort((a, b) => {
+    const ka = leafKey(a, field);
+    const kb = leafKey(b, field);
+    const aMissing = ka === null || ka === undefined || ka === '';
+    const bMissing = kb === null || kb === undefined || kb === '';
+    if (aMissing && bMissing) return 0;
+    if (aMissing) return 1;
+    if (bMissing) return -1;
+    if (typeof ka === 'number' && typeof kb === 'number') return (ka - kb) * dir;
+    return String(ka).localeCompare(String(kb), undefined, { numeric: true }) * dir;
+  });
 }
 
 /** Select a value in column `index`, appending the next column and dropping deeper ones. */
@@ -151,7 +205,7 @@ export function selectAt(path: BrowseStep[], index: number, value: string | null
 }
 
 /** Change column `index`'s grouping. Everything below described a different chain. */
-export function setFieldAt(path: BrowseStep[], index: number, field: GroupField): BrowseStep[] {
+export function setFieldAt(path: BrowseStep[], index: number, field: BrowseField): BrowseStep[] {
   return [...path.slice(0, index), { field, value: null }];
 }
 
@@ -165,14 +219,17 @@ export function setFieldAt(path: BrowseStep[], index: number, field: GroupField)
  */
 export function sanitizePath(path: BrowseStep[], tracks: Track[]): BrowseStep[] {
   if (path.length === 0) return defaultPath();
-  // Persisted state can predate a change to GROUP_FIELDS, or have been written
-  // by a caller that pushed a non-groupable sort field in. Start over rather
-  // than carry a step nothing can group by.
-  if (!path.every((s) => isGroupField(s.field))) return defaultPath();
+  // Persisted state can predate a change to the field lists, or have been
+  // written by a caller that pushed something unusable in.
+  if (!path.every((s) => isBrowseField(s.field))) return defaultPath();
 
   const out: BrowseStep[] = [];
   for (let i = 0; i < path.length; i++) {
     const step = path[i];
+    if (isLeafField(step.field)) {
+      out.push({ field: step.field, value: null });
+      break;
+    }
     if (step.value === null) {
       out.push(step);
       break;
@@ -186,9 +243,9 @@ export function sanitizePath(path: BrowseStep[], tracks: Track[]): BrowseStep[] 
     out.push(step);
   }
 
-  // A fully-selected path still needs its trailing unselected column.
+  // A fully-selected grouping column still needs its trailing column.
   const last = out[out.length - 1];
-  if (last && last.value !== null) {
+  if (last && !isLeafField(last.field) && last.value !== null) {
     const next = nextFieldFor(out, out.length - 1);
     if (next) out.push({ field: next, value: null });
   }

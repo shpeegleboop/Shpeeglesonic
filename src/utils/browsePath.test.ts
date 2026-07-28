@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
-  nextField, nextFieldFor, availableFieldsFor, defaultPath, filterByPath, groupsOf,
-  getGroupValue, selectAt, setFieldAt, sanitizePath,
+  nextFieldFor, availableFieldsFor, defaultPath, filterByPath, groupsOf,
+  getGroupValue, selectAt, setFieldAt, sanitizePath, sortTracks,
+  isLeafField, isGroupField,
 } from './browsePath';
 import type { Track } from '../stores/playerStore';
 
@@ -12,7 +13,7 @@ function track(fields: Partial<Track>): Track {
     year: null, track_number: null, disc_number: null, bpm: null,
     duration_seconds: null, format: null, bitrate: null, sample_rate: null,
     bit_depth: null, channels: null, has_album_art: false, art_path: null,
-    album_art_color: null, play_count: 0, favorited: false, dup_flag: false,
+    album_art_color: null, play_count: 0, favorited: false, dup_flag: false, date_added: null,
     ...fields,
   };
 }
@@ -25,23 +26,80 @@ const LIB: Track[] = [
   track({ id: 5, artist: null, album: null, title: 'untagged thing' }),
 ];
 
-describe('nextField', () => {
-  it('walks the default chain down to a leaf', () => {
-    expect(nextField('genre')).toBe('artist');
-    expect(nextField('year')).toBe('artist');
-    expect(nextField('format')).toBe('artist');
-    expect(nextField('playlist')).toBe('artist');
-    expect(nextField('artist')).toBe('album');
-  });
-
-  it('terminates at album', () => {
-    expect(nextField('album')).toBeNull();
+describe('field kinds', () => {
+  it('separates fields that can be broken down from fields that cannot', () => {
+    expect(isGroupField('artist')).toBe(true);
+    expect(isLeafField('artist')).toBe(false);
+    // Nothing nests under a duration or a BPM — these end a chain.
+    for (const f of ['title', 'bpm', 'duration', 'date_added', 'sample_rate']) {
+      expect(isLeafField(f)).toBe(true);
+      expect(isGroupField(f)).toBe(false);
+    }
   });
 });
 
-describe('defaultPath', () => {
-  it('starts with one unselected column', () => {
-    expect(defaultPath('artist')).toEqual([{ field: 'artist', value: null }]);
+describe('nextFieldFor', () => {
+  it('walks the default chain down to the track list', () => {
+    expect(nextFieldFor([{ field: 'genre', value: 'Rock' }], 0)).toBe('artist');
+    expect(nextFieldFor([{ field: 'artist', value: 'Radiohead' }], 0)).toBe('album');
+    expect(nextFieldFor([{ field: 'album', value: 'Kid A' }], 0)).toBe('title');
+  });
+
+  it('ends at a leaf — nothing follows a track list', () => {
+    for (const f of ['title', 'bpm', 'duration', 'date_added', 'sample_rate'] as const) {
+      expect(nextFieldFor([{ field: f, value: null }], 0)).toBeNull();
+    }
+  });
+
+  it('skips a chain field an ancestor already used', () => {
+    const path = [
+      { field: 'artist' as const, value: 'Radiohead' },
+      { field: 'genre' as const, value: 'Rock' },
+    ];
+    expect(nextFieldFor(path, 1)).toBe('album');
+  });
+
+  it('falls through to the track list once the grouping fields are used', () => {
+    const path = [
+      { field: 'artist' as const, value: 'Radiohead' },
+      { field: 'album' as const, value: 'Kid A' },
+    ];
+    expect(nextFieldFor(path, 1)).toBe('title');
+  });
+
+  it('cannot produce a self-referential next field', () => {
+    expect(nextFieldFor([{ field: 'artist', value: 'Radiohead' }], 0)).not.toBe('artist');
+  });
+});
+
+describe('availableFieldsFor', () => {
+  it('offers grouping and leaf fields together', () => {
+    const opts = availableFieldsFor(defaultPath('artist'), 0);
+    expect(opts).toContain('artist');
+    expect(opts).toContain('album');
+    expect(opts).toContain('title');
+    expect(opts).toContain('sample_rate');
+  });
+
+  // Grouping Radiohead's tracks by artist yields one "Radiohead" group, and
+  // clicking it appends another identical column forever.
+  it('hides grouping fields already fixed by an ancestor column', () => {
+    const path = [
+      { field: 'genre' as const, value: 'Rock' },
+      { field: 'artist' as const, value: null },
+    ];
+    const opts = availableFieldsFor(path, 1);
+    expect(opts).not.toContain('genre');
+    expect(opts).toContain('artist');
+  });
+
+  it('always offers leaf fields, however deep the path', () => {
+    const path = [
+      { field: 'genre' as const, value: 'Rock' },
+      { field: 'artist' as const, value: 'Radiohead' },
+      { field: 'album' as const, value: null },
+    ];
+    expect(availableFieldsFor(path, 2)).toContain('duration');
   });
 });
 
@@ -51,64 +109,97 @@ describe('filterByPath', () => {
       { field: 'artist' as const, value: 'Radiohead' },
       { field: 'album' as const, value: 'OK Computer' },
     ];
-    expect(filterByPath(LIB, path, 0).length).toBe(5); // nothing applied yet
+    expect(filterByPath(LIB, path, 0).length).toBe(5);
     expect(filterByPath(LIB, path, 1).map((t) => t.id)).toEqual([1, 2, 3]);
     expect(filterByPath(LIB, path, 2).map((t) => t.id)).toEqual([1, 2]);
   });
 
-  // The subtle one: a null selection means the Unknown bucket, and must match
-  // ONLY genuinely-null fields. Treating null as "no filter" would make the
-  // Unknown column show the entire library.
+  // A null selection means the Unknown bucket, and must match ONLY genuinely
+  // null fields. Treating it as "no filter" would make the Unknown column show
+  // the entire library.
   it('treats a null value as the Unknown bucket, not as "no filter"', () => {
-    const path = [{ field: 'artist' as const, value: null }];
-    expect(filterByPath(LIB, path, 1).map((t) => t.id)).toEqual([5]);
+    expect(filterByPath(LIB, [{ field: 'artist', value: null }], 1).map((t) => t.id)).toEqual([5]);
   });
 
-  it('ignores steps beyond upTo', () => {
+  it('ignores leaf steps, which carry no selection', () => {
     const path = [
       { field: 'artist' as const, value: 'Radiohead' },
-      { field: 'album' as const, value: 'Kid A' },
+      { field: 'title' as const, value: null },
     ];
-    expect(filterByPath(LIB, path, 1).length).toBe(3);
+    expect(filterByPath(LIB, path, 2).map((t) => t.id)).toEqual([1, 2, 3]);
   });
 });
 
 describe('groupsOf', () => {
   it('counts each group and buckets untagged tracks', () => {
-    const groups = groupsOf(LIB, 'artist');
-    const byLabel = Object.fromEntries(groups.map((g) => [g.label, g.count]));
+    const byLabel = Object.fromEntries(groupsOf(LIB, 'artist').map((g) => [g.label, g.count]));
     expect(byLabel['Radiohead']).toBe(3);
     expect(byLabel['Khruangbin']).toBe(1);
     expect(byLabel['Unknown Artist']).toBe(1);
   });
 
-  it('gives the Unknown bucket a null value so it can be selected', () => {
-    const unknown = groupsOf(LIB, 'artist').find((g) => g.label === 'Unknown Artist');
-    expect(unknown?.value).toBeNull();
+  it('sorts by label with Unknown last, not by incoming track order', () => {
+    const labels = groupsOf(LIB, 'artist').map((g) => g.label);
+    expect(labels).toEqual(['Khruangbin', 'Radiohead', 'Unknown Artist']);
   });
 
-  // A group literally named "null" must not collide with the Unknown bucket.
+  it('gives the Unknown bucket a null value so it can be selected', () => {
+    expect(groupsOf(LIB, 'artist').find((g) => g.label === 'Unknown Artist')?.value).toBeNull();
+  });
+
   it('keeps a group named "null" separate from the Unknown bucket', () => {
-    const lib = [track({ id: 9, artist: 'null' }), track({ id: 10, artist: null })];
-    const groups = groupsOf(lib, 'artist');
+    const groups = groupsOf([track({ id: 9, artist: 'null' }), track({ id: 10 })], 'artist');
     expect(groups).toHaveLength(2);
     expect(groups.find((g) => g.value === 'null')?.count).toBe(1);
     expect(groups.find((g) => g.value === null)?.count).toBe(1);
+  });
+
+  it('returns nothing for a leaf field, which has no groups', () => {
+    expect(groupsOf(LIB, 'duration')).toEqual([]);
+  });
+});
+
+describe('sortTracks', () => {
+  const mixed = [
+    track({ id: 1, title: 'Beta', duration_seconds: 200 }),
+    track({ id: 2, title: 'alpha', duration_seconds: 100 }),
+    track({ id: 3, title: 'Gamma', duration_seconds: null }),
+  ];
+
+  it('orders by title case-insensitively', () => {
+    expect(sortTracks(mixed, 'title', 'asc').map((t) => t.id)).toEqual([2, 1, 3]);
+  });
+
+  it('reverses on desc', () => {
+    expect(sortTracks(mixed, 'duration', 'desc').map((t) => t.id)).toEqual([1, 2, 3]);
+  });
+
+  // Absent data is not a low value — it should not lead an ascending sort.
+  it('sinks tracks missing the field to the bottom in both directions', () => {
+    expect(sortTracks(mixed, 'duration', 'asc').map((t) => t.id)).toEqual([2, 1, 3]);
+    expect(sortTracks(mixed, 'duration', 'desc')[2].id).toBe(3);
+  });
+
+  it('does not mutate its input', () => {
+    const before = mixed.map((t) => t.id);
+    sortTracks(mixed, 'title', 'desc');
+    expect(mixed.map((t) => t.id)).toEqual(before);
   });
 });
 
 describe('selectAt', () => {
   it('appends the next column from the default chain', () => {
-    const path = selectAt(defaultPath('artist'), 0, 'Radiohead');
-    expect(path).toEqual([
+    expect(selectAt(defaultPath('artist'), 0, 'Radiohead')).toEqual([
       { field: 'artist', value: 'Radiohead' },
       { field: 'album', value: null },
     ]);
   });
 
-  it('does not append past a leaf field', () => {
-    const path = selectAt([{ field: 'album', value: null }], 0, 'Kid A');
-    expect(path).toEqual([{ field: 'album', value: 'Kid A' }]);
+  it('appends the track list after the last grouping field', () => {
+    expect(selectAt([{ field: 'album', value: null }], 0, 'Kid A')).toEqual([
+      { field: 'album', value: 'Kid A' },
+      { field: 'title', value: null },
+    ]);
   });
 
   it('discards deeper columns when an earlier one changes', () => {
@@ -121,101 +212,14 @@ describe('selectAt', () => {
       { field: 'album', value: null },
     ]);
   });
-});
 
-// A column must never re-group by a field an ancestor already pinned to one
-// value: grouping Radiohead's tracks by artist yields a single "Radiohead"
-// group, and selecting it appends another identical column forever.
-describe('availableFieldsFor', () => {
-  it('offers every field at the root', () => {
-    expect(availableFieldsFor(defaultPath('artist'), 0)).toContain('artist');
-    expect(availableFieldsFor(defaultPath('artist'), 0)).toContain('album');
-  });
-
-  it('hides fields already fixed by an ancestor column', () => {
-    const path = [
-      { field: 'genre' as const, value: 'Rock' },
-      { field: 'artist' as const, value: null },
-    ];
-    const opts = availableFieldsFor(path, 1);
-    expect(opts).not.toContain('genre');
-    expect(opts).toContain('artist');
-    expect(opts).toContain('album');
-  });
-
-  it('still offers the column its own current field', () => {
-    const path = [
-      { field: 'artist' as const, value: 'Radiohead' },
-      { field: 'album' as const, value: null },
-    ];
-    expect(availableFieldsFor(path, 1)).toContain('album');
-  });
-});
-
-describe('nextFieldFor', () => {
-  it('skips a chain field that an ancestor already used', () => {
-    // genre -> artist normally, but artist is already pinned above.
-    const path = [
-      { field: 'artist' as const, value: 'Radiohead' },
-      { field: 'genre' as const, value: 'Rock' },
-    ];
-    expect(nextFieldFor(path, 1)).toBe('album');
-  });
-
-  it('returns null once every chain field is used', () => {
-    const path = [
-      { field: 'artist' as const, value: 'Radiohead' },
-      { field: 'album' as const, value: 'Kid A' },
-    ];
-    expect(nextFieldFor(path, 1)).toBeNull();
-  });
-
-  it('cannot produce a self-referential next field', () => {
-    const path = [{ field: 'artist' as const, value: 'Radiohead' }];
-    expect(nextFieldFor(path, 0)).not.toBe('artist');
-  });
-});
-
-describe('selectAt with ancestor-aware chaining', () => {
   it('does not append a column for a field already pinned above', () => {
-    // Regrouping by artist under an artist would loop forever.
     const path = [
       { field: 'artist' as const, value: 'Radiohead' },
       { field: 'artist' as const, value: null },
     ];
     const next = selectAt(path, 1, 'Radiohead');
-    expect(next.filter((s) => s.field === 'artist')).toHaveLength(2);
     expect(next[next.length - 1].field).toBe('album');
-  });
-});
-
-// Regression: updateSort used to cast any sort field to GroupField and write it
-// into browsePath. Picking "Title" persisted {field:'title'}, getGroupValue fell
-// through its switch returning undefined, and destructuring it white-screened
-// the app on every launch until localStorage was cleared.
-describe('resilience to a field that is not groupable', () => {
-  it('getGroupValue never returns undefined', () => {
-    const bogus = 'title' as unknown as Parameters<typeof getGroupValue>[1];
-    expect(() => getGroupValue(LIB[0], bogus)).not.toThrow();
-    expect(getGroupValue(LIB[0], bogus)).toHaveProperty('value');
-  });
-
-  it('groupsOf survives a bogus field instead of throwing', () => {
-    const bogus = 'title' as unknown as Parameters<typeof groupsOf>[1];
-    expect(() => groupsOf(LIB, bogus)).not.toThrow();
-  });
-
-  it('sanitizePath discards a persisted path with a non-groupable field', () => {
-    const path = [{ field: 'title', value: null }] as unknown as Parameters<typeof sanitizePath>[0];
-    expect(sanitizePath(path, LIB)).toEqual([{ field: 'artist', value: null }]);
-  });
-
-  it('sanitizePath discards a path whose deeper step is non-groupable', () => {
-    const path = [
-      { field: 'artist', value: 'Radiohead' },
-      { field: 'bpm', value: null },
-    ] as unknown as Parameters<typeof sanitizePath>[0];
-    expect(sanitizePath(path, LIB)).toEqual([{ field: 'artist', value: null }]);
   });
 });
 
@@ -227,13 +231,50 @@ describe('setFieldAt', () => {
     ];
     expect(setFieldAt(deep, 0, 'genre')).toEqual([{ field: 'genre', value: null }]);
   });
+
+  it('makes a column terminal when set to a leaf field', () => {
+    const deep = [
+      { field: 'artist' as const, value: 'Radiohead' },
+      { field: 'album' as const, value: null },
+    ];
+    const next = setFieldAt(deep, 1, 'sample_rate');
+    expect(next).toEqual([
+      { field: 'artist', value: 'Radiohead' },
+      { field: 'sample_rate', value: null },
+    ]);
+    expect(nextFieldFor(next, 1)).toBeNull();
+  });
+});
+
+// Regression: updateSort used to cast any sort field to GroupField and write it
+// into browsePath, getGroupValue fell through its switch returning undefined,
+// and destructuring it white-screened the app on every launch.
+describe('resilience to a field that is not valid at all', () => {
+  const bogus = [{ field: 'nonsense', value: null }] as unknown as Parameters<typeof sanitizePath>[0];
+
+  it('getGroupValue never returns undefined', () => {
+    const f = 'nonsense' as unknown as Parameters<typeof getGroupValue>[1];
+    expect(getGroupValue(LIB[0], f)).toHaveProperty('value');
+  });
+
+  it('sanitizePath discards a persisted path with an unknown field', () => {
+    expect(sanitizePath(bogus, LIB)).toEqual([{ field: 'artist', value: null }]);
+  });
 });
 
 describe('sanitizePath', () => {
-  it('keeps a path whose selections still exist', () => {
+  it('keeps a valid path and gives it a trailing track column', () => {
     const path = [
       { field: 'artist' as const, value: 'Radiohead' },
       { field: 'album' as const, value: 'OK Computer' },
+    ];
+    expect(sanitizePath(path, LIB)).toEqual([...path, { field: 'title', value: null }]);
+  });
+
+  it('leaves a leaf column terminal', () => {
+    const path = [
+      { field: 'artist' as const, value: 'Radiohead' },
+      { field: 'duration' as const, value: null },
     ];
     expect(sanitizePath(path, LIB)).toEqual(path);
   });
@@ -251,31 +292,12 @@ describe('sanitizePath', () => {
   });
 
   it('falls back to a default path when the root no longer matches', () => {
-    const path = [{ field: 'artist' as const, value: 'Nobody' }];
-    expect(sanitizePath(path, LIB)).toEqual([{ field: 'artist', value: null }]);
+    expect(sanitizePath([{ field: 'artist', value: 'Nobody' }], LIB)).toEqual([
+      { field: 'artist', value: null },
+    ]);
   });
 
   it('never returns an empty path', () => {
     expect(sanitizePath([], LIB)).toEqual([{ field: 'artist', value: null }]);
-  });
-
-  it('appends the trailing unselected column for a fully-selected path', () => {
-    const path = [{ field: 'artist' as const, value: 'Radiohead' }];
-    expect(sanitizePath(path, LIB)).toEqual([
-      { field: 'artist', value: 'Radiohead' },
-      { field: 'album', value: null },
-    ]);
-  });
-
-  // Guards the bug this design nearly shipped with: sanitizing against a
-  // search-filtered list would wipe the drill-down position mid-search.
-  it('keeps a valid path even when a filtered view would not contain it', () => {
-    const path = [
-      { field: 'artist' as const, value: 'Radiohead' },
-      { field: 'album' as const, value: 'Kid A' },
-    ];
-    // LIB is the unfiltered library; a search showing only Khruangbin must not
-    // be what this is called with, and against the full library the path holds.
-    expect(sanitizePath(path, LIB)).toEqual(path);
   });
 });

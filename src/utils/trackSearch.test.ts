@@ -9,7 +9,7 @@ function track(fields: Partial<Track>): Track {
     year: null, track_number: null, disc_number: null, bpm: null,
     duration_seconds: null, format: null, bitrate: null, sample_rate: null,
     bit_depth: null, channels: null, has_album_art: false, art_path: null,
-    album_art_color: null, play_count: 0, favorited: false, dup_flag: false,
+    album_art_color: null, play_count: 0, favorited: false, dup_flag: false, date_added: null,
     ...fields,
   };
 }
