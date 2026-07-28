@@ -74,3 +74,6 @@ Thumbs.db
 
 # Claude session files
 *.jsonl
+
+# ffmpeg sidecars — build outputs, rebuild with scripts/ffmpeg
+src-tauri/binaries/
