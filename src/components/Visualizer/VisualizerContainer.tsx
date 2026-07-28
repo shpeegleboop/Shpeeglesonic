@@ -28,6 +28,18 @@ export function VisualizerContainer({ inline }: VisualizerContainerProps) {
   // fullscreen, so a visualizer left running is just the visualizer.
   const [idle, setIdle] = useState(false);
   const idleRef = useRef(false);
+
+  // Applied to <html> rather than the overlay: a cursor rule on the overlay
+  // only reached some visualizers, since whichever element won the hit test
+  // kept its own cursor. Always cleared on exit — a stuck class would leave the
+  // whole app without a pointer.
+  useEffect(() => {
+    const root = document.documentElement;
+    if (fullscreen && idle) root.classList.add('hide-cursor');
+    else root.classList.remove('hide-cursor');
+    return () => root.classList.remove('hide-cursor');
+  }, [fullscreen, idle]);
+
   useEffect(() => {
     if (!fullscreen) {
       idleRef.current = false;

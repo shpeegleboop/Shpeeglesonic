@@ -70,6 +70,15 @@ body {
   background: transparent;
 }
 
+/* Idle fullscreen: hide the pointer everywhere.
+   Set on <html> and forced onto every descendant, because a cursor rule on the
+   fullscreen overlay alone only took effect over some visualizers — whichever
+   element actually wins the hit test kept its own cursor otherwise. */
+html.hide-cursor,
+html.hide-cursor * {
+  cursor: none !important;
+}
+
 /* Scrollbar styling — sized for lists of thousands of tracks. The thumb's
    min-height matters more than the width: thumb size is proportional to
    content, so at 5,000 rows it degenerates to a few pixels without a floor. */
