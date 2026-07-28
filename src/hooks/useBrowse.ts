@@ -5,6 +5,7 @@ import {
   availableFieldsFor, filterByPath, groupsOf, isLeafField,
   sanitizePath, selectAt, setFieldAt, sortTracks,
 } from '../utils/browsePath';
+import { columnScrollKey } from '../utils/scrollMemory';
 
 export interface BrowseColumnModel {
   index: number;
@@ -16,6 +17,8 @@ export interface BrowseColumnModel {
   /** True when this column shows tracks rather than group headings. */
   isLeaf: boolean;
   leafTracks: Track[];
+  /** Identifies this column's content for scroll restoration. */
+  scrollKey: string;
 }
 
 export interface BrowseModel {
@@ -62,6 +65,7 @@ export function useBrowse(tracks: Track[], allTracks: Track[]): BrowseModel {
           leafTracks: leaf && isLeafField(step.field)
             ? sortTracks(visible, step.field, sortOrder)
             : [],
+          scrollKey: columnScrollKey(step.field, path.slice(0, i)),
         };
       }),
     [tracks, path, sortOrder]

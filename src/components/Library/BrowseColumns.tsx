@@ -103,6 +103,7 @@ export function BrowseColumns({ tracks, allTracks, onLibraryChanged }: BrowseCol
                 <TrackList
                   tracks={col.leafTracks}
                   sortBy={col.field}
+                  scrollKey={col.scrollKey}
                   onLibraryChanged={onLibraryChanged}
                   onPlay={(track) => {
                     // Queue the column you played from, not the whole library.

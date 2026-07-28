@@ -72,6 +72,7 @@ export function Sidebar() {
               <TrackList
                 tracks={deepest.leafTracks}
                 sortBy={deepest.field}
+                scrollKey={deepest.scrollKey}
                 onLibraryChanged={() => library.fetchTracks()}
                 onPlay={(track) => {
                   const idx = deepest.leafTracks.findIndex((t) => t.id === track.id);

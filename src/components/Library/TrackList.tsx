@@ -1,4 +1,4 @@
-import { useRef, useState, useMemo } from 'react';
+import { useLayoutEffect, useRef, useState, useMemo } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { type Track, usePlayerStore } from '../../stores/playerStore';
 import {
@@ -13,6 +13,7 @@ import { TrackContextMenu } from './TrackContextMenu';
 import { MetadataEditModal } from './MetadataEditModal';
 import { MusicNoteIcon } from '../Icons';
 import { startTrackDrag } from '../../utils/trackDrag';
+import { getScrollOffset, setScrollOffset } from '../../utils/scrollMemory';
 
 interface TrackListProps {
   tracks: Track[];
@@ -26,6 +27,9 @@ interface TrackListProps {
   onReorder?: (from: number, to: number) => void;
   /** Supplied only in playlist view — adds "Remove from Playlist" to the menu. */
   onRemoveFromPlaylist?: (track: Track) => void;
+  /** Identifies this list's content so its scroll position survives leaving
+   *  and returning to the tab. Omitted by consumers that don't need it. */
+  scrollKey?: string;
 }
 
 // Get a metadata badge value for the current sort
@@ -50,7 +54,7 @@ function getSortMeta(track: Track, sortBy: string): string {
 
 type VirtualRow = { type: 'track'; key: string; track: Track; trackIndex: number };
 
-export function TrackList({ tracks, onPlay, sortBy = 'title', onLibraryChanged, emptyTitle, emptySubtitle, onReorder, onRemoveFromPlaylist }: TrackListProps) {
+export function TrackList({ tracks, onPlay, sortBy = 'title', onLibraryChanged, emptyTitle, emptySubtitle, onReorder, onRemoveFromPlaylist, scrollKey }: TrackListProps) {
   const parentRef = useRef<HTMLDivElement>(null);
   const currentTrack = usePlayerStore((s) => s.currentTrack);
   const [contextMenu, setContextMenu] = useState<{ track: Track; x: number; y: number } | null>(null);
@@ -74,6 +78,14 @@ export function TrackList({ tracks, onPlay, sortBy = 'title', onLibraryChanged, 
     overscan: 20,
   });
 
+  // Restore on mount and whenever this list switches to different content.
+  // A layout effect runs before paint, so the list does not visibly jump from
+  // the top to the remembered position.
+  useLayoutEffect(() => {
+    const el = parentRef.current;
+    if (el) el.scrollTop = getScrollOffset(scrollKey);
+  }, [scrollKey]);
+
   if (tracks.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center h-full p-4 text-center">
@@ -88,7 +100,11 @@ export function TrackList({ tracks, onPlay, sortBy = 'title', onLibraryChanged, 
 
   return (
     <div className="h-full flex flex-col">
-      <div ref={parentRef} className="flex-1 overflow-auto">
+      <div
+        ref={parentRef}
+        className="flex-1 overflow-auto"
+        onScroll={(e) => setScrollOffset(scrollKey, e.currentTarget.scrollTop)}
+      >
         <div
           style={{
             height: `${virtualizer.getTotalSize()}px`,

@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { type BrowseColumnModel } from '../../hooks/useBrowse';
 import {
@@ -7,6 +7,7 @@ import {
 } from '../../utils/browsePath';
 import { ColumnHeader } from './ColumnHeader';
 import { startTrackDrag } from '../../utils/trackDrag';
+import { getScrollOffset, setScrollOffset } from '../../utils/scrollMemory';
 import { GroupContextMenu } from './GroupContextMenu';
 import { RenameGroupModal } from './RenameGroupModal';
 
@@ -47,11 +48,23 @@ export function GroupList({
     overscan: 20,
   });
 
+  // Restore on mount and whenever the column switches to different content.
+  // The layout effect runs before paint, so the list does not visibly jump from
+  // the top to the remembered position.
+  useLayoutEffect(() => {
+    const el = parentRef.current;
+    if (el) el.scrollTop = getScrollOffset(column.scrollKey);
+  }, [column.scrollKey]);
+
   return (
     <div className={`flex flex-col h-full border-r border-cosmic-border/30 ${className}`}>
       <ColumnHeader field={column.field} fields={fields} onSetField={onSetField} />
 
-      <div ref={parentRef} className="flex-1 overflow-y-auto">
+      <div
+        ref={parentRef}
+        className="flex-1 overflow-y-auto"
+        onScroll={(e) => setScrollOffset(column.scrollKey, e.currentTarget.scrollTop)}
+      >
         <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
           {virtualizer.getVirtualItems().map((vi) => {
             const g = column.groups[vi.index];
