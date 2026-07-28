@@ -121,7 +121,9 @@ pub fn choose_backend(path: &str) -> Result<(Backend, ProbeInfo), String> {
     let owned = path.to_string();
     decide(open_for_streaming(path).map(|(_, _, _, info)| info), move || {
         if !ffmpeg::is_available() {
-            return Err("extended codec support is unavailable".to_string());
+            return Err("this build is missing its extended codec support. \
+                        Reinstall the app, or put ffmpeg on your PATH"
+                .to_string());
         }
         ffmpeg::probe(&owned)
     })
@@ -268,22 +270,55 @@ mod tests {
         false
     }
 
-    /// Write a minimal but valid stereo DSF. ffmpeg can *decode* DSD but has no
-    /// DSD encoder, so this fixture has to be authored rather than generated —
-    /// which also means it carries no external dependency.
+    const DSD_RATE: u32 = 2822400; // DSD64
+    const DSD_BLOCK: u32 = 4096; // bytes per channel per block, fixed by the spec
+
+    /// One-bit sigma-delta modulation of a sine, packed LSB-first.
     ///
-    /// Layout: 28-byte `DSD ` chunk, 52-byte `fmt ` chunk, then `data`. Sample
-    /// bytes are 0x69 (alternating bits) rather than zero, so a misread of the
-    /// block interleave shows up as wrong audio instead of passing as silence.
-    fn write_minimal_dsf(path: &std::path::Path) {
+    /// A constant byte pattern would not do: 0x69 is a ~1.4MHz square wave that
+    /// the decoder's decimation filter removes entirely, so the fixture would
+    /// decode to silence and a test asserting "it played" would pass on nothing.
+    /// This produces a genuinely audible tone instead.
+    fn dsd_modulate_sine(freq: f64, bytes: usize) -> Vec<u8> {
+        let mut out = Vec::with_capacity(bytes);
+        let mut acc = 0.0f64;
+        let mut n = 0u64;
+        for _ in 0..bytes {
+            let mut byte = 0u8;
+            for bit in 0..8 {
+                let t = n as f64 / f64::from(DSD_RATE);
+                let target = 0.5 * (std::f64::consts::TAU * freq * t).sin();
+                let high = acc >= 0.0;
+                // Feedback: +1 for a set bit, -1 for a clear one.
+                acc += target - if high { 1.0 } else { -1.0 };
+                if high {
+                    byte |= 1 << bit; // LSB-first, matching dsd_lsbf
+                }
+                n += 1;
+            }
+            out.push(byte);
+        }
+        out
+    }
+
+    /// Write a valid stereo DSF. ffmpeg *decodes* DSD but has no DSD encoder, so
+    /// this fixture has to be authored rather than generated — which also leaves
+    /// it free of any external dependency.
+    ///
+    /// Layout: 28-byte `DSD ` chunk, 52-byte `fmt ` chunk, then `data` holding
+    /// per-channel blocks of DSD_BLOCK bytes, interleaved block-by-block.
+    fn write_minimal_dsf(path: &std::path::Path, blocks: u32) {
         use std::io::Write;
 
-        const RATE: u32 = 2822400;
         const CHANNELS: u32 = 2;
-        const BLOCK: u32 = 4096; // bytes per channel per block, fixed by the spec
+        let per_channel = (DSD_BLOCK * blocks) as usize;
 
-        let data_bytes = u64::from(BLOCK * CHANNELS);
-        let sample_count = (data_bytes / u64::from(CHANNELS)) * 8;
+        // Slightly different pitches per channel, so a channel mix-up is audible.
+        let left = dsd_modulate_sine(440.0, per_channel);
+        let right = dsd_modulate_sine(554.37, per_channel);
+
+        let data_bytes = u64::from(DSD_BLOCK * CHANNELS * blocks);
+        let sample_count = u64::from(DSD_BLOCK * blocks) * 8;
         let fmt_len: u64 = 52;
         let data_len: u64 = 12 + data_bytes;
         let total: u64 = 28 + fmt_len + data_len;
@@ -300,15 +335,19 @@ mod tests {
         f.write_all(&0u32.to_le_bytes()).unwrap(); // format id: DSD raw
         f.write_all(&2u32.to_le_bytes()).unwrap(); // channel type: stereo
         f.write_all(&CHANNELS.to_le_bytes()).unwrap();
-        f.write_all(&RATE.to_le_bytes()).unwrap();
+        f.write_all(&DSD_RATE.to_le_bytes()).unwrap();
         f.write_all(&1u32.to_le_bytes()).unwrap(); // bits per sample
         f.write_all(&sample_count.to_le_bytes()).unwrap();
-        f.write_all(&BLOCK.to_le_bytes()).unwrap();
+        f.write_all(&DSD_BLOCK.to_le_bytes()).unwrap();
         f.write_all(&0u32.to_le_bytes()).unwrap(); // reserved
 
         f.write_all(b"data").unwrap();
         f.write_all(&data_len.to_le_bytes()).unwrap();
-        f.write_all(&vec![0x69u8; data_bytes as usize]).unwrap();
+        let b = DSD_BLOCK as usize;
+        for i in 0..blocks as usize {
+            f.write_all(&left[i * b..(i + 1) * b]).unwrap();
+            f.write_all(&right[i * b..(i + 1) * b]).unwrap();
+        }
     }
 
     #[test]
@@ -317,7 +356,7 @@ mod tests {
             return;
         }
         let path = std::env::temp_dir().join("shpeegle-test-tone.dsf");
-        write_minimal_dsf(&path);
+        write_minimal_dsf(&path, 8);
 
         let (backend, info) =
             choose_backend(path.to_str().unwrap()).expect("DSF should be playable via ffmpeg");
@@ -327,6 +366,63 @@ mod tests {
         assert_eq!(info.channels, 2);
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// Probing only proves the header was read. This runs the DSF through the
+    /// exact pipeline playback uses and checks real audio comes out — the one
+    /// test that would catch ffmpeg decoding DSD to silence.
+    #[test]
+    fn dsf_decodes_to_audible_pcm() {
+        if !ffmpeg_or_skip() {
+            return;
+        }
+        use std::io::Read;
+
+        let path = std::env::temp_dir().join("shpeegle-audible-tone.dsf");
+        write_minimal_dsf(&path, 64);
+
+        let mut child = ffmpeg::open_stream(path.to_str().unwrap(), 44100, 2)
+            .expect("ffmpeg should decode the DSF");
+        let mut raw = Vec::new();
+        child
+            .stdout
+            .take()
+            .expect("stdout")
+            .read_to_end(&mut raw)
+            .expect("read pcm");
+        let _ = child.wait();
+
+        let samples: Vec<f32> = raw
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect();
+        assert!(!samples.is_empty(), "decoded no PCM at all");
+
+        let rms = (samples.iter().map(|s| (*s as f64).powi(2)).sum::<f64>()
+            / samples.len() as f64)
+            .sqrt();
+        assert!(
+            rms > 0.01,
+            "DSF decoded to near-silence (rms {rms:.5}) — the modulation or bit \
+             order is wrong, even though the header parsed fine"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Writes a playable DSF somewhere you can point the app at, for testing in
+    /// the real UI. ffmpeg has no DSD encoder, so this is the only way to get
+    /// one without a genuine SACD rip.
+    ///
+    ///   SHPEEGLE_DSF_OUT=D:\path\tone.dsf cargo test --lib write_dsf_fixture -- --ignored
+    #[test]
+    #[ignore]
+    fn write_dsf_fixture() {
+        let out = std::env::var("SHPEEGLE_DSF_OUT")
+            .expect("set SHPEEGLE_DSF_OUT to the .dsf path to write");
+        // ~5 seconds: 352800 bytes per channel per second / 4096 per block.
+        write_minimal_dsf(std::path::Path::new(&out), 431);
+        println!("wrote {}", out);
     }
 
     #[test]
