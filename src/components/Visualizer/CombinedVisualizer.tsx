@@ -66,7 +66,9 @@ export function CombinedVisualizer({ fftRef, lastUpdateRef, width, height }: Com
         });
       }
 
-      ctx.fillStyle = 'rgba(10, 10, 20, 0.22)';
+      // Fade to true black — the old rgba(10,10,20,...) settled at a blue-grey
+      // that never cleared, tinting the whole background.
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.22)';
       ctx.fillRect(0, 0, width, height);
 
       const hueBase = (t * 18) % 360;

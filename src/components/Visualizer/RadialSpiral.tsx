@@ -64,7 +64,9 @@ export function RadialSpiral({ fftRef, lastUpdateRef, width, height }: RadialSpi
       const morph = morphRef.current;
 
       // Trail fade — slow for rich pattern buildup
-      ctx.fillStyle = 'rgba(10, 10, 20, 0.08)';
+      // Fade to true black — the old rgba(10,10,20,...) settled at a blue-grey
+      // that never cleared, tinting the whole background.
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.08)';
       ctx.fillRect(0, 0, width, height);
 
       const hueBase = (t * 22) % 360;
