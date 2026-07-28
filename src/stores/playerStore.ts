@@ -108,7 +108,7 @@ export type VisualizerType =
   | 'rotator'
   | 'mandelbrot'
   | 'buddhabrot'
-  | 'paint'
+  | 'fireworks'
   | 'notes'
   | 'combined'
   | 'banger'
@@ -120,7 +120,7 @@ export const VISUALIZER_MODES: { id: VisualizerType; label: string }[] = [
   { id: 'rotator', label: 'Rotating Spiral' },
   { id: 'mandelbrot', label: 'Mandelbrot' },
   { id: 'buddhabrot', label: 'Buddhabrot' },
-  { id: 'paint', label: 'Paint Splash' },
+  { id: 'fireworks', label: 'Fireworks' },
   { id: 'notes', label: 'Music Notes' },
   { id: 'combined', label: 'Combined' },
   { id: 'banger', label: 'Banger Detector' },
@@ -546,9 +546,16 @@ export const usePlayerStore = create<PlayerState>()(
       // when restoring state saved by an older version
       merge: (persisted, current) => {
         const p = persisted as Partial<PlayerState> | undefined;
+        // 'paint' (Paint Splash) became 'fireworks'. Without this, anyone who
+        // had it selected would silently land on Bars via the switch default.
+        const mode =
+          (p?.visualizerMode as string) === 'paint'
+            ? ('fireworks' as VisualizerType)
+            : p?.visualizerMode;
         return {
           ...current,
           ...p,
+          ...(mode ? { visualizerMode: mode } : {}),
           visualizerSettings: {
             ...current.visualizerSettings,
             ...(p?.visualizerSettings ?? {}),

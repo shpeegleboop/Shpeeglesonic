@@ -6,7 +6,7 @@ import { RadialSpiral } from './RadialSpiral';
 import { RotatingSpiral } from './RotatingSpiral';
 import { MandelbrotGL } from './MandelbrotGL';
 import { Buddhabrot } from './Buddhabrot';
-import { PaintSplash } from './PaintSplash';
+import { Fireworks } from './Fireworks';
 import { MusicNotes } from './MusicNotes';
 import { CombinedVisualizer } from './CombinedVisualizer';
 import { BangerDetector } from './BangerDetector';
@@ -66,8 +66,8 @@ export function VisualizerContainer({ inline }: VisualizerContainerProps) {
         return <MandelbrotGL {...props} />;
       case 'buddhabrot':
         return <Buddhabrot {...props} />;
-      case 'paint':
-        return <PaintSplash {...props} />;
+      case 'fireworks':
+        return <Fireworks {...props} />;
       case 'notes':
         return <MusicNotes {...props} />;
       case 'combined':
