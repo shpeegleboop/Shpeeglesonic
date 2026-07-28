@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist, type PersistStorage } from 'zustand/middleware';
+import { type BrowseStep, defaultPath } from '../utils/browsePath';
 
 const PERSIST_KEY = 'shpeeglesonic-player';
 
@@ -158,6 +159,14 @@ interface PlayerState {
   playbackError: string | null;
   selectedPlaylistId: number | null;
 
+  // Library browsing — shared by the Library tab and the Now Playing sidebar so
+  // the two are views of one state rather than two independent ones. Never
+  // empty; browsePath[0].field is the root grouping and doubles as the SQL sort
+  // column.
+  browsePath: BrowseStep[];
+  browseSortOrder: 'asc' | 'desc';
+  browseSearch: string;
+
   // Actions
   setCurrentTrack: (track: Track | null) => void;
   setTrackInfo: (info: TrackInfo | null) => void;
@@ -182,6 +191,9 @@ interface PlayerState {
   setVisualizerFullscreen: (fs: boolean) => void;
   setArtZoomVisible: (v: boolean) => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
+  setBrowsePath: (path: BrowseStep[]) => void;
+  setBrowseSortOrder: (order: 'asc' | 'desc') => void;
+  setBrowseSearch: (q: string) => void;
   setCurrentView: (view: ViewMode) => void;
   setLyricsVisible: (visible: boolean) => void;
   setQueueVisible: (visible: boolean) => void;
@@ -228,6 +240,9 @@ export const usePlayerStore = create<PlayerState>()(
   },
 
   sidebarCollapsed: false,
+  browsePath: defaultPath('artist'),
+  browseSortOrder: 'asc' as const,
+  browseSearch: '',
   lyricsVisible: false,
   queueVisible: true,
   currentView: 'nowPlaying',
@@ -416,6 +431,9 @@ export const usePlayerStore = create<PlayerState>()(
   setVisualizerFullscreen: (fs) => set({ visualizerFullscreen: fs }),
   setArtZoomVisible: (v) => set({ artZoomVisible: v }),
   setSidebarCollapsed: (collapsed) => set({ sidebarCollapsed: collapsed }),
+  setBrowsePath: (browsePath) => set({ browsePath }),
+  setBrowseSortOrder: (browseSortOrder) => set({ browseSortOrder }),
+  setBrowseSearch: (browseSearch) => set({ browseSearch }),
   setCurrentView: (view) => set({ currentView: view }),
   setLyricsVisible: (visible) => set({ lyricsVisible: visible }),
   setQueueVisible: (visible) => set({ queueVisible: visible }),
@@ -450,6 +468,11 @@ export const usePlayerStore = create<PlayerState>()(
         sidebarCollapsed: s.sidebarCollapsed,
         currentView: s.currentView,
         selectedPlaylistId: s.selectedPlaylistId,
+        // A few hundred bytes next to the queue — no impact on the throttled
+        // write budget, and worth keeping so you reopen where you left off.
+        browsePath: s.browsePath,
+        browseSortOrder: s.browseSortOrder,
+        browseSearch: s.browseSearch,
       }),
       // Deep-merge visualizerSettings so new fields keep their defaults
       // when restoring state saved by an older version

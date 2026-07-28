@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { type Track, usePlayerStore } from '../stores/playerStore';
 import { matchesQuery } from '../utils/trackSearch';
+import { defaultPath, type GroupField } from '../utils/browsePath';
 
 /** What `scan_folder` reports back. Mirrors scanner::ScanSummary. */
 export interface ScanSummary {
@@ -26,9 +27,14 @@ export function useLibrary() {
   const [tracks, setTracks] = useState<Track[]>(_globalTracks);
   const [folders, setFolders] = useState<string[]>(_globalFolders);
   const [loading, setLoading] = useState(false);
-  const [sortBy, setSortBy] = useState('artist');
-  const [sortOrder, setSortOrder] = useState('asc');
-  const [searchQuery, setSearchQuery] = useState('');
+
+  // Sort and search live in the store, not in local state. They used to be
+  // useState here, which meant LibraryView and Sidebar each held their own copy
+  // and neither view ever reflected the other.
+  const browsePath = usePlayerStore((s) => s.browsePath);
+  const sortBy = browsePath[0]?.field ?? 'artist';
+  const sortOrder = usePlayerStore((s) => s.browseSortOrder);
+  const searchQuery = usePlayerStore((s) => s.browseSearch);
 
   // Subscribe to global updates
   useEffect(() => {
@@ -113,9 +119,14 @@ export function useLibrary() {
   }, [fetchTracks, fetchFolders]);
 
   const updateSort = useCallback((by: string, order?: string) => {
-    const newOrder = order || (by === sortBy && sortOrder === 'asc' ? 'desc' : 'asc');
-    setSortBy(by);
-    setSortOrder(newOrder);
+    const st = usePlayerStore.getState();
+    const newOrder = (order || (by === sortBy && sortOrder === 'asc' ? 'desc' : 'asc')) as 'asc' | 'desc';
+    st.setBrowseSortOrder(newOrder);
+    // Changing the grouping field invalidates any drill-down below it — the
+    // old path described a different chain.
+    if (by !== sortBy) {
+      st.setBrowsePath(defaultPath(by as GroupField));
+    }
     fetchTracks(by, newOrder);
   }, [sortBy, sortOrder, fetchTracks]);
 
@@ -123,7 +134,7 @@ export function useLibrary() {
   // The old implementation refetched on every keystroke, which at 4000 tracks
   // meant a ~3s query plus ~2MB of JSON per character typed.
   const updateSearch = useCallback((query: string) => {
-    setSearchQuery(query);
+    usePlayerStore.getState().setBrowseSearch(query);
   }, []);
 
   const visibleTracks = useMemo(
