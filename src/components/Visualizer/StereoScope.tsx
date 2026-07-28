@@ -1,5 +1,22 @@
 import { useRef, useEffect } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import type { FFTData } from '../../hooks/useFFTData';
+import { usePlayerStore } from '../../stores/playerStore';
+
+/** Vertical layout, as fractions of canvas height. Shared by the renderer and
+ *  the click hit-test so the seekable strip is exactly the drawn strip. */
+const SCOPE_FRAC = 0.42;
+const OVERVIEW_FRAC = 0.18;
+
+interface Overview {
+  left: Uint8Array;
+  right: Uint8Array;
+}
+
+/** Decoding a whole track costs real time, so keep it per path for the session.
+ *  Bounded because a long shuffle would otherwise accumulate every track. */
+const overviewCache = new Map<string, Overview>();
+const OVERVIEW_CACHE_MAX = 24;
 
 interface StereoScopeProps {
   fftRef: React.RefObject<FFTData>;
@@ -30,6 +47,63 @@ export function StereoScope({ fftRef, lastUpdateRef, width, height }: StereoScop
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animRef = useRef<number>(0);
   const specCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const overviewRef = useRef<Overview | null>(null);
+
+  // A selector, so this only re-renders when the track actually changes.
+  // Subscribing to the whole store here would re-render at the 15Hz currentTime
+  // tick, and the playhead is read inside the render loop instead precisely to
+  // avoid that.
+  const trackPath = usePlayerStore((s) => s.currentTrack?.file_path ?? null);
+
+  useEffect(() => {
+    overviewRef.current = null;
+    if (!trackPath) return;
+
+    const cached = overviewCache.get(trackPath);
+    if (cached) {
+      overviewRef.current = cached;
+      return;
+    }
+
+    let cancelled = false;
+    invoke<{ left: number[]; right: number[] }>('get_waveform_overview', {
+      path: trackPath,
+      buckets: 2000,
+    })
+      .then((r) => {
+        if (cancelled) return;
+        const ov: Overview = { left: Uint8Array.from(r.left), right: Uint8Array.from(r.right) };
+        if (overviewCache.size >= OVERVIEW_CACHE_MAX) overviewCache.clear();
+        overviewCache.set(trackPath, ov);
+        overviewRef.current = ov;
+      })
+      // Nothing to recover from — the strip simply stays empty for formats or
+      // files the decode cannot handle.
+      .catch(() => {});
+
+    return () => {
+      cancelled = true;
+    };
+  }, [trackPath]);
+
+  /** Click the overview strip to seek. Anywhere else falls through, so the
+   *  fullscreen overlay's click-to-exit still works everywhere it used to. */
+  const handleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+    const yFrac = (e.clientY - rect.top) / rect.height;
+    if (yFrac < SCOPE_FRAC || yFrac > SCOPE_FRAC + OVERVIEW_FRAC) return;
+
+    const duration = usePlayerStore.getState().duration;
+    if (!duration) return;
+    e.stopPropagation();
+
+    const frac = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    const seconds = frac * duration;
+    invoke('seek', { position: seconds })
+      .then(() => usePlayerStore.getState().setCurrentTime(seconds))
+      .catch((err) => console.error('Seek failed:', err));
+  };
   const scrollCarryRef = useRef(0);
 
   useEffect(() => {
@@ -38,8 +112,10 @@ export function StereoScope({ fftRef, lastUpdateRef, width, height }: StereoScop
     const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
     if (!ctx) return;
 
-    const scopeH = Math.floor(height * 0.55);
-    const specH = height - scopeH;
+    const scopeH = Math.floor(height * SCOPE_FRAC);
+    const overviewH = Math.floor(height * OVERVIEW_FRAC);
+    const overviewY = scopeH;
+    const specH = height - scopeH - overviewH;
 
     // Persistent offscreen buffer for the scrolling spectrogram
     const spec = document.createElement('canvas');
@@ -133,6 +209,57 @@ export function StereoScope({ fftRef, lastUpdateRef, width, height }: StereoScop
       ctx.fillStyle = 'rgba(120, 120, 160, 0.25)';
       ctx.fillRect(0, scopeH - 1, width, 1);
 
+      // ── Whole-song overview ──
+      // Peak envelope for the entire track, L above R, with a playhead that
+      // walks it. Read from the store here rather than as a prop so the 15Hz
+      // currentTime tick never re-runs this effect.
+      ctx.fillStyle = 'rgb(8, 8, 16)';
+      ctx.fillRect(0, overviewY, width, overviewH);
+
+      const ov = overviewRef.current;
+      const st = usePlayerStore.getState();
+      const playFrac =
+        st.duration > 0 ? Math.max(0, Math.min(1, st.currentTime / st.duration)) : 0;
+      const playX = Math.floor(playFrac * width);
+
+      if (ov && ov.left.length > 0) {
+        const halfH = overviewH / 2;
+        const lMid = overviewY + halfH * 0.5;
+        const rMid = overviewY + halfH * 1.5;
+        const amp = halfH * 0.46;
+        const n = ov.left.length;
+
+        for (let x = 0; x < width; x++) {
+          // Each column covers a span of buckets, so take the peak across it —
+          // sampling one bucket per column would drop transients on long songs.
+          const b0 = Math.floor((x / width) * n);
+          const b1 = Math.max(b0 + 1, Math.floor(((x + 1) / width) * n));
+          let lPeak = 0;
+          let rPeak = 0;
+          for (let b = b0; b < b1 && b < n; b++) {
+            if (ov.left[b] > lPeak) lPeak = ov.left[b];
+            if (ov.right[b] > rPeak) rPeak = ov.right[b];
+          }
+          const played = x <= playX;
+          const lh = Math.max(1, (lPeak / 255) * amp);
+          const rh = Math.max(1, (rPeak / 255) * amp);
+          ctx.fillStyle = played ? 'rgb(196, 120, 255)' : 'rgba(196, 120, 255, 0.28)';
+          ctx.fillRect(x, lMid - lh, 1, lh * 2);
+          ctx.fillStyle = played ? 'rgb(110, 231, 249)' : 'rgba(110, 231, 249, 0.28)';
+          ctx.fillRect(x, rMid - rh, 1, rh * 2);
+        }
+      }
+
+      // Playhead — drawn even before the envelope arrives, so the strip still
+      // reads as a progress bar while the decode is in flight.
+      if (st.duration > 0) {
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
+        ctx.fillRect(playX, overviewY, 1, overviewH);
+      }
+
+      ctx.fillStyle = 'rgba(120, 120, 160, 0.25)';
+      ctx.fillRect(0, overviewY + overviewH - 1, width, 1);
+
       // ── Spectrogram area ──
       const specCanvas = specCanvasRef.current!;
       const sctx = specCtx;
@@ -160,12 +287,20 @@ export function StereoScope({ fftRef, lastUpdateRef, width, height }: StereoScop
           sctx.putImageData(column, width - 1 - col, 0);
         }
       }
-      ctx.drawImage(specCanvas, 0, scopeH);
+      ctx.drawImage(specCanvas, 0, overviewY + overviewH);
     };
 
     render();
     return () => cancelAnimationFrame(animRef.current);
   }, [width, height]);
 
-  return <canvas ref={canvasRef} width={width} height={height} className="block w-full h-full" />;
+  return (
+    <canvas
+      ref={canvasRef}
+      width={width}
+      height={height}
+      onClick={handleClick}
+      className="block w-full h-full"
+    />
+  );
 }

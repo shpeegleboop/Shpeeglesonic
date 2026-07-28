@@ -56,6 +56,7 @@ pub fn run() {
             commands::pause,
             commands::resume,
             commands::stop,
+            commands::get_waveform_overview,
             commands::seek,
             commands::set_volume,
             commands::get_playback_state,

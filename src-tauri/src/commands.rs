@@ -475,3 +475,20 @@ pub async fn fetch_lyrics(
     }
 }
 
+
+/// Peak envelope for a whole track, for the Stereo Scope overview.
+///
+/// `async` so Tauri runs it off the main thread: a full decode takes from a
+/// fraction of a second to several for a long lossless file, and blocking there
+/// would stall every other command behind it.
+#[command]
+pub async fn get_waveform_overview(
+    path: String,
+    buckets: usize,
+) -> Result<crate::audio::waveform::WaveformOverview, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::audio::waveform::overview(&path, buckets)
+    })
+    .await
+    .map_err(|e| format!("waveform task failed: {}", e))?
+}
