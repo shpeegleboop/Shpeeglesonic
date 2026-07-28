@@ -124,7 +124,7 @@ export const VISUALIZER_MODES: { id: VisualizerType; label: string }[] = [
   { id: 'buddhabrot', label: 'Buddhabrot' },
   { id: 'fireworks', label: 'Fireworks' },
   { id: 'notes', label: 'Music Notes' },
-  { id: 'combined', label: 'Combined' },
+  { id: 'combined', label: 'Medley' },
   { id: 'banger', label: 'Banger Detector' },
   { id: 'scope', label: 'Stereo Scope' },
 ];

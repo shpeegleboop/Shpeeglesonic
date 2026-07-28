@@ -70,7 +70,7 @@ export function VisualizerQuickSettings() {
       {open && (
         <div className="absolute top-9 right-0 w-56 glass-panel p-3 space-y-3 shadow-xl shadow-black/50">
           <div className="grid grid-cols-2 gap-1">
-            {VISUALIZER_MODES.map((m, i) => (
+            {VISUALIZER_MODES.map((m) => (
               <button
                 key={m.id}
                 onClick={() => setMode(m.id)}
@@ -79,7 +79,7 @@ export function VisualizerQuickSettings() {
                     ? 'bg-neon-purple/25 text-neon-purple border border-neon-purple/40'
                     : 'text-gray-500 hover:text-white hover:bg-white/5 border border-transparent'
                 }`}
-                title={`${m.label} (${i + 1})`}
+                title={m.label}
               >
                 {m.label}
               </button>

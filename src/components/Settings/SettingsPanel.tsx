@@ -278,7 +278,6 @@ export function SettingsPanel() {
             ['M', 'Mute'],
             ['L', 'Lyrics'],
             ['Q', 'Queue Panel'],
-            ['1-8', 'Viz Type'],
             ['Ctrl+F', 'Search'],
             ['Ctrl+L', 'Library Panel'],
             ['Esc', 'Exit Fullscreen'],

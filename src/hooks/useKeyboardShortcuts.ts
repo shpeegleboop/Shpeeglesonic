@@ -82,24 +82,6 @@ export function useKeyboardShortcuts() {
         case 'Escape':
           if (store.visualizerFullscreen) store.setVisualizerFullscreen(false);
           break;
-        case '1':
-        case '2':
-        case '3':
-        case '4':
-        case '5':
-        case '6':
-        case '7':
-        case '8':
-        case '9':
-        case '0': {
-          if (!isMeta) {
-            // '0' selects the 10th mode
-            const idx = e.key === '0' ? 9 : parseInt(e.key, 10) - 1;
-            const m = VISUALIZER_MODES[idx];
-            if (m) store.setVisualizerMode(m.id);
-          }
-          break;
-        }
       }
 
       // Cmd+F / Ctrl+F — focus search

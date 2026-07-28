@@ -73,18 +73,17 @@ export function VisualizerView() {
         <section className="glass-panel p-3 space-y-2">
           <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Mode</h3>
           <div className="grid grid-cols-1 gap-1">
-            {VISUALIZER_MODES.map((m, i) => (
+            {VISUALIZER_MODES.map((m) => (
               <button
                 key={m.id}
                 onClick={() => setMode(m.id)}
-                className={`flex items-center justify-between px-2.5 py-1.5 text-xs rounded-lg transition-all ${
+                className={`px-2.5 py-1.5 text-xs rounded-lg text-left transition-all ${
                   mode === m.id
                     ? 'bg-neon-purple/20 text-neon-purple border border-neon-purple/40 shadow-[0_0_12px_rgba(168,85,247,0.15)]'
                     : 'text-gray-400 hover:text-white hover:bg-white/5 border border-transparent'
                 }`}
               >
-                <span>{m.label}</span>
-                <kbd className="font-mono text-[10px] text-gray-600">{i + 1}</kbd>
+                {m.label}
               </button>
             ))}
           </div>
@@ -174,7 +173,7 @@ export function VisualizerView() {
         </button>
 
         <p className="text-[11px] text-gray-600 px-1 leading-relaxed">
-          V cycles modes · 1–9 and 0 jump straight to one · Esc exits fullscreen. All settings save automatically.
+          V cycles modes · Esc exits fullscreen. All settings save automatically.
         </p>
       </div>
     </div>
