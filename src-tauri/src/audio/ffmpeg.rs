@@ -155,8 +155,20 @@ pub fn parse_probe_json(json: &str) -> Result<ProbeInfo, String> {
 
     let format = root.get("format");
 
-    let sample_rate: u32 = num(stream.get("sample_rate"))
+    let codec = stream
+        .get("codec_name")
+        .and_then(|c| c.as_str())
+        .unwrap_or("");
+    // ffmpeg's DSD decoders decimate by 8 — one byte of 1-bit DSD becomes one
+    // PCM sample — so ffprobe reports 352800 for a DSD64 file whose real rate
+    // is 2822400. Undo that to report the source rate, which is what an
+    // audiophile player is expected to display ("DSD64 / 2.8 MHz"). Playback is
+    // unaffected: ffmpeg still emits at the device rate either way.
+    let is_dsd = codec.starts_with("dsd_");
+
+    let raw_rate: u32 = num(stream.get("sample_rate"))
         .ok_or_else(|| "ffprobe reported no sample rate".to_string())?;
+    let sample_rate = if is_dsd { raw_rate * 8 } else { raw_rate };
     let channels: u16 = num(stream.get("channels")).unwrap_or(2);
 
     // DSF and some containers carry duration only at the format level.
@@ -164,9 +176,15 @@ pub fn parse_probe_json(json: &str) -> Result<ProbeInfo, String> {
         .or_else(|| num(format.and_then(|f| f.get("duration"))))
         .unwrap_or(0.0);
 
-    let bit_depth: Option<u32> = num(stream.get("bits_per_raw_sample"))
-        .or_else(|| num(stream.get("bits_per_sample")))
-        .filter(|b| *b > 0);
+    // DSD is 1-bit by definition; ffprobe's bits_per_sample of 8 describes its
+    // byte packing, not the format.
+    let bit_depth: Option<u32> = if is_dsd {
+        Some(1)
+    } else {
+        num(stream.get("bits_per_raw_sample"))
+            .or_else(|| num(stream.get("bits_per_sample")))
+            .filter(|b| *b > 0)
+    };
 
     let bitrate: Option<u32> = num(stream.get("bit_rate"))
         .or_else(|| num(format.and_then(|f| f.get("bit_rate"))))
@@ -254,9 +272,14 @@ mod tests {
       "format": { "format_name": "aiff", "duration": "0.500000", "bit_rate": "1412064" }
     }"#;
 
-    /// DSF: rate as a string, no per-stream duration, no bit depth field.
+    /// Real shape from our own ffprobe against a synthesized DSD64 file: the
+    /// reported rate is already decimated by 8, bits_per_sample describes byte
+    /// packing rather than the 1-bit format, and there is no stream duration.
     const DSF_JSON: &str = r#"{
-      "streams": [{ "sample_rate": "2822400", "channels": 2, "sample_fmt": "flt" }],
+      "streams": [{
+        "codec_name": "dsd_lsbf_planar", "sample_rate": "352800",
+        "channels": 2, "bits_per_sample": 8
+      }],
       "format": { "duration": "12.000000" }
     }"#;
 
@@ -273,10 +296,26 @@ mod tests {
     #[test]
     fn falls_back_to_format_duration_when_the_stream_has_none() {
         let info = parse_probe_json(DSF_JSON).expect("should parse");
-        assert_eq!(info.sample_rate, 2822400, "native DSD rate must survive");
         assert!((info.duration_seconds - 12.0).abs() < 1e-6);
-        assert_eq!(info.bit_depth, None);
         assert_eq!(info.bitrate, None);
+    }
+
+    #[test]
+    fn reports_dsd_at_its_source_rate_and_one_bit() {
+        let info = parse_probe_json(DSF_JSON).expect("should parse");
+        assert_eq!(
+            info.sample_rate, 2822400,
+            "352800 x 8 — ffmpeg's DSD decoders decimate by 8, so ffprobe's \
+             figure is the decoded PCM rate, not the DSD64 source rate"
+        );
+        assert_eq!(info.bit_depth, Some(1), "DSD is 1-bit; the reported 8 is byte packing");
+    }
+
+    #[test]
+    fn leaves_non_dsd_rates_alone() {
+        let info = parse_probe_json(AIFF_JSON).expect("should parse");
+        assert_eq!(info.sample_rate, 44100, "the x8 rule must not touch PCM");
+        assert_eq!(info.bit_depth, Some(16));
     }
 
     #[test]

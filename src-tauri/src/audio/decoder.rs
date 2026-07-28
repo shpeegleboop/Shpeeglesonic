@@ -260,6 +260,96 @@ mod tests {
         assert_eq!(backend, Backend::Symphonia, "AIFF must stay on the native path");
     }
 
+    fn ffmpeg_or_skip() -> bool {
+        if ffmpeg::is_available() {
+            return true;
+        }
+        eprintln!("skipping: no ffmpeg available");
+        false
+    }
+
+    /// Write a minimal but valid stereo DSF. ffmpeg can *decode* DSD but has no
+    /// DSD encoder, so this fixture has to be authored rather than generated —
+    /// which also means it carries no external dependency.
+    ///
+    /// Layout: 28-byte `DSD ` chunk, 52-byte `fmt ` chunk, then `data`. Sample
+    /// bytes are 0x69 (alternating bits) rather than zero, so a misread of the
+    /// block interleave shows up as wrong audio instead of passing as silence.
+    fn write_minimal_dsf(path: &std::path::Path) {
+        use std::io::Write;
+
+        const RATE: u32 = 2822400;
+        const CHANNELS: u32 = 2;
+        const BLOCK: u32 = 4096; // bytes per channel per block, fixed by the spec
+
+        let data_bytes = u64::from(BLOCK * CHANNELS);
+        let sample_count = (data_bytes / u64::from(CHANNELS)) * 8;
+        let fmt_len: u64 = 52;
+        let data_len: u64 = 12 + data_bytes;
+        let total: u64 = 28 + fmt_len + data_len;
+
+        let mut f = std::fs::File::create(path).expect("create dsf");
+        f.write_all(b"DSD ").unwrap();
+        f.write_all(&28u64.to_le_bytes()).unwrap();
+        f.write_all(&total.to_le_bytes()).unwrap();
+        f.write_all(&0u64.to_le_bytes()).unwrap(); // no metadata pointer
+
+        f.write_all(b"fmt ").unwrap();
+        f.write_all(&fmt_len.to_le_bytes()).unwrap();
+        f.write_all(&1u32.to_le_bytes()).unwrap(); // version
+        f.write_all(&0u32.to_le_bytes()).unwrap(); // format id: DSD raw
+        f.write_all(&2u32.to_le_bytes()).unwrap(); // channel type: stereo
+        f.write_all(&CHANNELS.to_le_bytes()).unwrap();
+        f.write_all(&RATE.to_le_bytes()).unwrap();
+        f.write_all(&1u32.to_le_bytes()).unwrap(); // bits per sample
+        f.write_all(&sample_count.to_le_bytes()).unwrap();
+        f.write_all(&BLOCK.to_le_bytes()).unwrap();
+        f.write_all(&0u32.to_le_bytes()).unwrap(); // reserved
+
+        f.write_all(b"data").unwrap();
+        f.write_all(&data_len.to_le_bytes()).unwrap();
+        f.write_all(&vec![0x69u8; data_bytes as usize]).unwrap();
+    }
+
+    #[test]
+    fn dsf_routes_to_ffmpeg_at_its_native_rate() {
+        if !ffmpeg_or_skip() {
+            return;
+        }
+        let path = std::env::temp_dir().join("shpeegle-test-tone.dsf");
+        write_minimal_dsf(&path);
+
+        let (backend, info) =
+            choose_backend(path.to_str().unwrap()).expect("DSF should be playable via ffmpeg");
+
+        assert_eq!(backend, Backend::Ffmpeg, "symphonia cannot demux DSD");
+        assert_eq!(info.sample_rate, 2822400, "must report the native DSD rate");
+        assert_eq!(info.channels, 2);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn wavpack_is_playable() {
+        if !ffmpeg_or_skip() {
+            return;
+        }
+        let (_, info) = choose_backend(&fixture("tone.wv")).expect("WavPack should be playable");
+        assert_eq!(info.sample_rate, 44100);
+        assert_eq!(info.channels, 2);
+        assert!((info.duration_seconds - 0.5).abs() < 0.05);
+    }
+
+    #[test]
+    fn true_audio_is_playable() {
+        if !ffmpeg_or_skip() {
+            return;
+        }
+        let (_, info) = choose_backend(&fixture("tone.tta")).expect("TTA should be playable");
+        assert_eq!(info.sample_rate, 44100);
+        assert_eq!(info.channels, 2);
+    }
+
     #[test]
     fn decodes_alac_natively() {
         let audio = decode_file(&fixture("tone-alac.m4a")).expect("ALAC decode should succeed");
