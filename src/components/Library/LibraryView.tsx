@@ -1,6 +1,5 @@
 import { useEffect } from 'react';
 import { usePlayerStore, FAVORITES_PLAYLIST_ID } from '../../stores/playerStore';
-import { usePlaylistGrouping } from '../../hooks/usePlaylistGrouping';
 import { useLibrary } from '../../hooks/useLibrary';
 import { BrowseColumns } from './BrowseColumns';
 import { SearchBar } from './SearchBar';
@@ -17,7 +16,7 @@ export function LibraryView() {
   }, []);
 
   const isFavorites = selectedPlaylistId === FAVORITES_PLAYLIST_ID;
-  const baseTracks = usePlaylistGrouping(library);
+  const baseTracks = library.tracks;
   const visibleTracks = isFavorites ? baseTracks.filter((t) => t.favorited) : baseTracks;
 
   return (

@@ -1,7 +1,6 @@
 import { useEffect } from 'react';
 import { usePlayerStore } from '../../stores/playerStore';
 import { useLibrary } from '../../hooks/useLibrary';
-import { usePlaylistGrouping } from '../../hooks/usePlaylistGrouping';
 import { useBrowse } from '../../hooks/useBrowse';
 import { useAudioPlayer } from '../../hooks/useAudioPlayer';
 import { TrackList } from '../Library/TrackList';
@@ -14,7 +13,7 @@ import { ChevronLeftIcon } from '../Icons';
 export function Sidebar() {
   const collapsed = usePlayerStore((s) => s.sidebarCollapsed);
   const library = useLibrary();
-  const displayTracks = usePlaylistGrouping(library);
+  const displayTracks = library.tracks;
   const { columns, path, select, setField, popTo } = useBrowse(displayTracks, library.allTracks);
   const player = useAudioPlayer();
 

@@ -75,8 +75,6 @@ export interface Track {
   /** ISO-ish timestamp from SQLite. Present so "Date Added" sorts client-side
    *  like every other column instead of needing a round trip. */
   date_added: string | null;
-  /** Frontend-only annotation used by the library's "Playlist" grouping */
-  playlist_label?: string;
 }
 
 export interface TrackInfo {

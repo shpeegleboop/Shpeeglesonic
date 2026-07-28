@@ -1,7 +1,7 @@
 import { type Track } from '../stores/playerStore';
 
 /** Fields you can break the library down by — each opens another column. */
-export type GroupField = 'artist' | 'album' | 'genre' | 'year' | 'format' | 'playlist';
+export type GroupField = 'artist' | 'album' | 'genre' | 'year' | 'format';
 
 /**
  * Fields that end a chain. Nothing can be nested under "duration" or "BPM", so
@@ -31,7 +31,7 @@ export interface BrowseGroup {
   tracks: Track[];
 }
 
-export const GROUP_FIELDS: GroupField[] = ['artist', 'album', 'genre', 'year', 'format', 'playlist'];
+export const GROUP_FIELDS: GroupField[] = ['artist', 'album', 'genre', 'year', 'format'];
 export const LEAF_FIELDS: LeafField[] = ['title', 'bpm', 'duration', 'date_added', 'sample_rate'];
 
 export const FIELD_LABELS: Record<BrowseField, string> = {
@@ -40,7 +40,6 @@ export const FIELD_LABELS: Record<BrowseField, string> = {
   genre: 'Genre',
   year: 'Year',
   format: 'Format',
-  playlist: 'Playlist',
   title: 'Track Title',
   bpm: 'BPM',
   duration: 'Duration',
@@ -78,8 +77,6 @@ export function getGroupValue(track: Track, field: BrowseField): { value: string
       return { value: track.year ? String(track.year) : null, label: track.year ? String(track.year) : 'Unknown Year' };
     case 'format':
       return { value: track.format ?? null, label: track.format ? track.format.toUpperCase() : 'Unknown Format' };
-    case 'playlist':
-      return { value: track.playlist_label ?? null, label: track.playlist_label || 'Not in a Playlist' };
     default:
       return { value: null, label: 'Unknown' };
   }
@@ -94,7 +91,6 @@ const PREFERRED_AFTER: Record<GroupField, BrowseField[]> = {
   genre: ['artist', 'album', 'title'],
   year: ['artist', 'album', 'title'],
   format: ['artist', 'album', 'title'],
-  playlist: ['artist', 'album', 'title'],
   artist: ['album', 'title'],
   album: ['title'],
 };
