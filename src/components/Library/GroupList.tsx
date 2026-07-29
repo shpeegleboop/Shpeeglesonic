@@ -69,7 +69,9 @@ export function GroupList({
           {virtualizer.getVirtualItems().map((vi) => {
             const g = column.groups[vi.index];
             if (!g) return null;
-            const active = g.value === column.selected;
+            // hasSelection first: null is a real group (Unknown), so comparing
+            // values alone marks it active whenever nothing is selected.
+            const active = column.hasSelection && g.value === column.selected;
             return (
               <div
                 key={vi.key}

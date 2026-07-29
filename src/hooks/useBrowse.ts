@@ -2,7 +2,7 @@ import { useMemo } from 'react';
 import { usePlayerStore, type Track } from '../stores/playerStore';
 import {
   type BrowseField, type BrowseGroup, type BrowseStep,
-  availableFieldsFor, filterByPath, groupsOf, isLeafField,
+  availableFieldsFor, filterByPath, groupsOf, isLeafField, isPicked,
   sanitizePath, selectAt, setFieldAt, sortTracks,
 } from '../utils/browsePath';
 import { columnScrollKey } from '../utils/scrollMemory';
@@ -11,6 +11,10 @@ export interface BrowseColumnModel {
   index: number;
   field: BrowseField;
   selected: string | null;
+  /** Whether `selected` is a choice at all. Without it a column with nothing
+   *  picked looks identical to one where the Unknown bucket is picked, and the
+   *  Unknown row renders as active on every column. */
+  hasSelection: boolean;
   groups: BrowseGroup[];
   /** Fields this column may offer — excludes grouping fields pinned above it. */
   fields: BrowseField[];
@@ -59,6 +63,7 @@ export function useBrowse(tracks: Track[], allTracks: Track[]): BrowseModel {
           index: i,
           field: step.field,
           selected: step.value,
+          hasSelection: isPicked(step),
           groups: leaf ? [] : groupsOf(visible, step.field),
           fields: availableFieldsFor(path, i),
           isLeaf: leaf,
@@ -77,6 +82,10 @@ export function useBrowse(tracks: Track[], allTracks: Track[]): BrowseModel {
     select: (index, value) => setBrowsePath(selectAt(path, index, value)),
     setField: (index, field) => setBrowsePath(setFieldAt(path, index, field)),
     popTo: (index) =>
-      setBrowsePath(path.slice(0, index + 1).map((s, i) => (i === index ? { ...s, value: null } : s))),
+      setBrowsePath(
+        path.slice(0, index + 1).map((s, i) =>
+          i === index ? { ...s, value: null, picked: false } : s
+        )
+      ),
   };
 }

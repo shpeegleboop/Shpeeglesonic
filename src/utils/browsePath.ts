@@ -16,11 +16,27 @@ export type BrowseField = GroupField | LeafField;
 export interface BrowseStep {
   field: BrowseField;
   /**
-   * For a grouping column: the selected value, or null for "nothing picked
-   * yet". A null that sits ABOVE the column being rendered means the Unknown
-   * bucket. Leaf columns always carry null — they have nothing to select.
+   * The selected value. null is the Unknown bucket — the tracks with no artist,
+   * no album, no year — which is a real, selectable group, NOT the absence of a
+   * selection. Whether anything is selected at all is `picked`.
    */
   value: string | null;
+  /**
+   * True once this column has been chosen from. Without it, null has to mean
+   * both "Unknown selected" and "nothing selected yet", and the two are not
+   * distinguishable — which made the Unknown bucket impossible to open, because
+   * sanitizePath read the selection as an empty column and truncated it away.
+   *
+   * Optional so paths persisted before this existed still load: a step with a
+   * real value was necessarily picked, and a step with null was necessarily
+   * not, which is exactly what the old encoding meant.
+   */
+  picked?: boolean;
+}
+
+/** Whether a step carries a selection, tolerating the pre-`picked` encoding. */
+export function isPicked(step: BrowseStep): boolean {
+  return step.picked ?? step.value !== null;
 }
 
 export interface BrowseGroup {
@@ -126,7 +142,9 @@ export function defaultPath(root: BrowseField = 'artist'): BrowseStep[] {
  * `upTo` is a count of steps to apply, so column 0 applies none.
  */
 export function filterByPath(tracks: Track[], path: BrowseStep[], upTo: number): Track[] {
-  const steps = path.slice(0, upTo).filter((s) => isGroupField(s.field));
+  // An unpicked step filters nothing — including one whose value is null, which
+  // is the Unknown bucket only once it has actually been chosen.
+  const steps = path.slice(0, upTo).filter((s) => isGroupField(s.field) && isPicked(s));
   if (steps.length === 0) return tracks;
   return tracks.filter((t) => steps.every((s) => getGroupValue(t, s.field).value === s.value));
 }
@@ -200,7 +218,9 @@ export function sortTracks(tracks: Track[], field: LeafField, order: 'asc' | 'de
 export function selectAt(path: BrowseStep[], index: number, value: string | null): BrowseStep[] {
   const head = path.slice(0, index);
   const current = path[index];
-  const kept: BrowseStep[] = [...head, { field: current.field, value }];
+  // picked is explicit because `value` alone cannot express "the Unknown
+  // bucket is selected" — null already means the bucket itself.
+  const kept: BrowseStep[] = [...head, { field: current.field, value, picked: true }];
   const next = nextFieldFor(kept, kept.length - 1);
   return next ? [...kept, { field: next, value: null }] : kept;
 }
@@ -231,7 +251,7 @@ export function sanitizePath(path: BrowseStep[], tracks: Track[]): BrowseStep[] 
       out.push({ field: step.field, value: null });
       break;
     }
-    if (step.value === null) {
+    if (!isPicked(step)) {
       out.push(step);
       break;
     }
@@ -246,7 +266,7 @@ export function sanitizePath(path: BrowseStep[], tracks: Track[]): BrowseStep[] 
 
   // A fully-selected grouping column still needs its trailing column.
   const last = out[out.length - 1];
-  if (last && !isLeafField(last.field) && last.value !== null) {
+  if (last && !isLeafField(last.field) && isPicked(last)) {
     const next = nextFieldFor(out, out.length - 1);
     if (next) out.push({ field: next, value: null });
   }

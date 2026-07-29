@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   nextFieldFor, availableFieldsFor, defaultPath, filterByPath, groupsOf,
   getGroupValue, selectAt, setFieldAt, sanitizePath, sortTracks,
-  isLeafField, isGroupField,
+  isLeafField, isGroupField, isPicked,
 } from './browsePath';
 import type { Track } from '../stores/playerStore';
 
@@ -114,11 +114,19 @@ describe('filterByPath', () => {
     expect(filterByPath(LIB, path, 2).map((t) => t.id)).toEqual([1, 2]);
   });
 
-  // A null selection means the Unknown bucket, and must match ONLY genuinely
-  // null fields. Treating it as "no filter" would make the Unknown column show
-  // the entire library.
-  it('treats a null value as the Unknown bucket, not as "no filter"', () => {
-    expect(filterByPath(LIB, [{ field: 'artist', value: null }], 1).map((t) => t.id)).toEqual([5]);
+  // A PICKED null is the Unknown bucket and must match ONLY genuinely null
+  // fields. Treating it as "no filter" would make the Unknown column show the
+  // entire library.
+  it('treats a picked null as the Unknown bucket, not as "no filter"', () => {
+    const path = [{ field: 'artist' as const, value: null, picked: true }];
+    expect(filterByPath(LIB, path, 1).map((t) => t.id)).toEqual([5]);
+  });
+
+  // An unpicked step is an open column with nothing chosen in it. It filters
+  // nothing — which is also how a path saved before `picked` existed reads,
+  // since that encoding had no way to express a selected Unknown.
+  it('ignores a null that was never picked', () => {
+    expect(filterByPath(LIB, [{ field: 'artist', value: null }], 1)).toHaveLength(5);
   });
 
   it('ignores leaf steps, which carry no selection', () => {
@@ -202,14 +210,14 @@ describe('sortTracks', () => {
 describe('selectAt', () => {
   it('appends the next column from the default chain', () => {
     expect(selectAt(defaultPath('artist'), 0, 'Radiohead')).toEqual([
-      { field: 'artist', value: 'Radiohead' },
+      { field: 'artist', value: 'Radiohead', picked: true },
       { field: 'album', value: null },
     ]);
   });
 
   it('appends the track list after the last grouping field', () => {
     expect(selectAt([{ field: 'album', value: null }], 0, 'Kid A')).toEqual([
-      { field: 'album', value: 'Kid A' },
+      { field: 'album', value: 'Kid A', picked: true },
       { field: 'title', value: null },
     ]);
   });
@@ -220,7 +228,7 @@ describe('selectAt', () => {
       { field: 'album' as const, value: 'Kid A' },
     ];
     expect(selectAt(deep, 0, 'Khruangbin')).toEqual([
-      { field: 'artist', value: 'Khruangbin' },
+      { field: 'artist', value: 'Khruangbin', picked: true },
       { field: 'album', value: null },
     ]);
   });
@@ -311,5 +319,67 @@ describe('sanitizePath', () => {
 
   it('never returns an empty path', () => {
     expect(sanitizePath([], LIB)).toEqual([{ field: 'artist', value: null }]);
+  });
+});
+
+// The Unknown bucket is a real group — the tracks with no artist tag at all —
+// and selecting it has to survive sanitizePath. It did not: null meant both
+// "Unknown selected" and "nothing selected", so the selection was read as an
+// empty column and truncated away the instant it was made. Clicking
+// "Unknown Artist" appeared to do nothing.
+describe('the Unknown bucket is selectable', () => {
+  it('marks a picked step even when the value is null', () => {
+    const next = selectAt(defaultPath('artist'), 0, null);
+    expect(next[0]).toEqual({ field: 'artist', value: null, picked: true });
+  });
+
+  it('opens a column for it, like any other group', () => {
+    const next = selectAt(defaultPath('artist'), 0, null);
+    expect(next).toHaveLength(2);
+    expect(next[1].field).toBe('album');
+  });
+
+  it('survives sanitizePath instead of being truncated away', () => {
+    const path = selectAt(defaultPath('artist'), 0, null);
+    expect(sanitizePath(path, LIB)).toEqual(path);
+  });
+
+  it('filters to exactly the untagged tracks', () => {
+    const path = selectAt(defaultPath('artist'), 0, null);
+    const visible = filterByPath(LIB, path, 1);
+    expect(visible.map((t) => t.id)).toEqual([5]);
+  });
+
+  // Untagged tracks are their own Unknown Album underneath Unknown Artist.
+  it('drills further into Unknown Album', () => {
+    const artistStep = selectAt(defaultPath('artist'), 0, null);
+    const albumStep = selectAt(artistStep, 1, null);
+    expect(sanitizePath(albumStep, LIB)).toEqual(albumStep);
+    expect(filterByPath(LIB, albumStep, 2).map((t) => t.id)).toEqual([5]);
+  });
+
+  // If nothing is untagged the selection names a group that is not there, and
+  // it should reset like any other stale selection.
+  it('resets when no untagged tracks remain', () => {
+    const tagged = LIB.filter((t) => t.artist !== null);
+    const path = selectAt(defaultPath('artist'), 0, null);
+    expect(sanitizePath(path, tagged)).toEqual([{ field: 'artist', value: null }]);
+  });
+});
+
+describe('isPicked reads paths saved before the flag existed', () => {
+  it('treats a real value as picked', () => {
+    expect(isPicked({ field: 'artist', value: 'Radiohead' })).toBe(true);
+  });
+
+  // The old encoding had no way to say "Unknown selected", so a bare null from
+  // an older build always meant an empty column.
+  it('treats a bare null as nothing selected', () => {
+    expect(isPicked({ field: 'artist', value: null })).toBe(false);
+  });
+
+  it('lets an explicit flag override both', () => {
+    expect(isPicked({ field: 'artist', value: null, picked: true })).toBe(true);
+    expect(isPicked({ field: 'artist', value: 'Radiohead', picked: false })).toBe(false);
   });
 });
