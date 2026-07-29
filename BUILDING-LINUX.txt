@@ -1,0 +1,98 @@
+BUILDING SHPEEGLESONIC ON LINUX
+===============================
+
+Shpeeglesonic is developed and released on Windows. It compiles for Linux --
+CI does it on every push -- but nobody has yet confirmed it plays a note there.
+Treat this as a starting point, not a supported platform.
+
+
+PREBUILT, IF YOU WOULD RATHER NOT BUILD
+---------------------------------------
+
+The "Linux build" workflow in GitHub Actions produces a .deb, an .rpm, an
+AppImage and the raw binary on every push to main. Open the newest run and take
+them from its Artifacts:
+
+  https://github.com/shpeegleboop/Shpeeglesonic/actions
+
+On Arch and Garuda, take the AppImage -- pacman wants neither the deb nor the
+rpm. Then:
+
+  chmod +x Shpeeglesonic_1.0.0_amd64.AppImage
+  ./Shpeeglesonic_1.0.0_amd64.AppImage
+
+Everything is built on Ubuntu 22.04, so its glibc is older than yours. That is
+the direction that works.
+
+Downloading artifacts requires a GitHub account. If that is a nuisance, whoever
+owns the repo can pull the AppImage down and hand it over -- it is one
+self-contained file.
+
+
+BUILDING IT YOURSELF (ARCH / GARUDA)
+------------------------------------
+
+  sudo pacman -S --needed \
+    base-devel curl wget file openssl \
+    webkit2gtk-4.1 libappindicator-gtk3 librsvg alsa-lib \
+    nodejs npm rustup ffmpeg
+
+  rustup default stable
+
+  git clone https://github.com/shpeegleboop/Shpeeglesonic.git
+  cd Shpeeglesonic
+  npm install
+  npm run tauri build          # or: npm run tauri dev
+
+The binary lands in src-tauri/target/release/shpeeglesonic, and the bundles in
+src-tauri/target/release/bundle/.
+
+alsa-lib is the one people miss. Tauri does not list it, because Tauri has no
+audio of its own, but cpal will not configure without it.
+
+
+FFMPEG
+------
+
+On Windows a trimmed ffmpeg ships inside the installer, because Windows users
+cannot be expected to have one. On Linux that would be rude -- every distro
+packages it, and yours is almost certainly newer than ours. So
+tauri.linux.conf.json clears externalBin, and the app finds ffmpeg and ffprobe
+on PATH instead.
+
+Without them, the formats that need ffmpeg -- DSD, WMA, APE, WavPack, Musepack,
+TTA -- will not play. Everything symphonia decodes natively (FLAC, MP3, WAV,
+AIFF, ALAC, AAC, Vorbis) still works.
+
+
+WHAT IS MISSING ON LINUX
+------------------------
+
+Exclusive mode. It is WASAPI, so there is no such thing here. The checkbox is
+hidden and playback always goes through the shared path. The Linux equivalent
+would be an ALSA hw: backend bypassing PipeWire -- a separate backend, not a
+port of the Windows one, and it does not exist.
+
+The device picker does work. cpal enumerates the devices and the app resolves
+them by cpal's stable device id, the same mechanism the Windows build uses. On
+a PipeWire system expect the server's virtual devices listed alongside the raw
+ALSA ones.
+
+
+WHAT TO ACTUALLY WATCH FOR
+--------------------------
+
+The frontend runs on WebKitGTK here rather than WebView2, and that is where the
+risk is.
+
+Every visualizer is canvas 2D. Vortex, Banger Detector and Medley are the heavy
+ones -- they are fill-rate bound at high sensitivity even on Chromium. If they
+stutter, set Sensitivity to about 2.0 and Quality to Medium in the visualizer
+settings before concluding anything is broken.
+
+The canvas contexts ask for desynchronized rendering, which is likely ignored
+here. Mandelbrot is WebGL and entirely unverified.
+
+If it runs at all, the interesting question is whether the visualizers hold
+60fps. That is the part most likely to disappoint, and the part least likely to
+be anyone's fault.
