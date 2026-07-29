@@ -16,6 +16,7 @@ interface OutputStatus {
   resampling: boolean;
   file_sample_rate: number | null;
   exclusive_requested: boolean;
+  exclusive_supported: boolean;
 }
 
 const khz = (hz: number) => `${(hz / 1000).toFixed(1).replace(/\.0$/, '')} kHz`;
@@ -94,25 +95,31 @@ export function OutputSettings() {
         </select>
       </div>
 
-      <div>
-        <label className="flex items-start gap-2 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={exclusive}
-            onChange={(e) => apply(e.target.checked, deviceId)}
-            className="mt-0.5 accent-neon-purple"
-          />
-          <span>
-            <span className="text-sm text-gray-200">Windows Exclusive Mode</span>
-            <span className="block text-[11px] text-gray-500 leading-relaxed mt-0.5">
-              Takes sole control of the device and plays each file at its own sample rate,
-              bypassing the Windows mixer and its resampling. Nothing else on the system can
-              make a sound while a track is playing — no notifications, no browser audio.
-              Takes effect on the next track.
+      {/* Exclusive mode is a WASAPI concept. Elsewhere the checkbox would do
+          nothing, so it is absent rather than dead. status is null until the
+          first fetch lands, and hiding it until then would make it flicker in
+          on Windows — the far commoner case. */}
+      {status?.exclusive_supported !== false && (
+        <div>
+          <label className="flex items-start gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={exclusive}
+              onChange={(e) => apply(e.target.checked, deviceId)}
+              className="mt-0.5 accent-neon-purple"
+            />
+            <span>
+              <span className="text-sm text-gray-200">Windows Exclusive Mode</span>
+              <span className="block text-[11px] text-gray-500 leading-relaxed mt-0.5">
+                Takes sole control of the device and plays each file at its own sample rate,
+                bypassing the Windows mixer and its resampling. Nothing else on the system can
+                make a sound while a track is playing — no notifications, no browser audio.
+                Takes effect on the next track.
+              </span>
             </span>
-          </span>
-        </label>
-      </div>
+          </label>
+        </div>
+      )}
 
       <div className="bg-black/25 border border-cosmic-border/30 rounded-md px-3 py-2">
         <div className="text-[11px] text-gray-500 uppercase tracking-wider mb-1">
@@ -124,7 +131,9 @@ export function OutputSettings() {
               {khz(status.sample_rate)}
               {status.bit_depth ? ` · ${status.bit_depth}-bit` : ''}
               {status.channels ? ` · ${status.channels} ch` : ''}
-              <span className="text-gray-500"> · {status.exclusive ? 'exclusive' : 'shared'}</span>
+              {status.exclusive_supported && (
+                <span className="text-gray-500"> · {status.exclusive ? 'exclusive' : 'shared'}</span>
+              )}
             </div>
             <div className="text-[11px] text-gray-500 mt-0.5">
               {status.file_sample_rate

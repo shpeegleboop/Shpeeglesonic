@@ -200,11 +200,22 @@ impl AudioEngine {
             }
         }
 
-        let rate = self.default_sample_rate;
-        let channels = self.default_channels;
+        // Shared mode follows the picker as well. Without this the dropdown
+        // would only ever have moved exclusive-mode playback, and would sit
+        // there claiming to select a device it did not actually use.
+        // cpal's device id is the same string WASAPI reports, so the picker
+        // needs no translation to drive the shared path too.
+        let (device, rate, channels) = output::open_device_by_id(self.output_device_id.as_deref())
+            .unwrap_or_else(|_| {
+                (
+                    self.device.clone(),
+                    self.default_sample_rate,
+                    self.default_channels,
+                )
+            });
         let (producer, consumer) = Self::make_ring(rate, channels);
         let stream = output::build_output_stream(
-            &self.device,
+            &device,
             rate,
             channels,
             consumer,

@@ -518,6 +518,9 @@ pub struct OutputStatus {
     /// Set when exclusive mode is switched on but the device is not running it,
     /// so the UI can say why instead of silently lying.
     pub exclusive_requested: bool,
+    /// False off Windows, where there is no WASAPI to take exclusive control
+    /// of. The UI hides the control rather than offering a dead checkbox.
+    pub exclusive_supported: bool,
 }
 
 #[command]
@@ -534,9 +537,18 @@ pub fn list_output_devices() -> Result<Vec<OutputDeviceInfo>, String> {
             })
             .collect());
     }
+    // Elsewhere cpal is the only enumeration available. Its ids are stable and
+    // are exactly what the shared path resolves against.
     #[cfg(not(windows))]
     {
-        Ok(Vec::new())
+        Ok(crate::audio::output::list_cpal_outputs()
+            .into_iter()
+            .map(|(id, name, is_default)| OutputDeviceInfo {
+                id,
+                name,
+                is_default,
+            })
+            .collect())
     }
 }
 
@@ -567,5 +579,6 @@ pub fn get_output_status(engine: State<'_, AudioEngineState>) -> Result<OutputSt
             .unwrap_or(false),
         file_sample_rate,
         exclusive_requested: engine.exclusive_enabled,
+        exclusive_supported: cfg!(windows),
     })
 }
