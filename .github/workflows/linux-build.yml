@@ -37,12 +37,13 @@ jobs:
           workspaces: src-tauri
 
       # Tauri v2 needs webkit2gtk 4.1; the 4.0 packages are for v1 and will not
-      # satisfy it.
+      # satisfy it. libasound2-dev is not on Tauri's own dependency list —
+      # Tauri has no audio — but cpal's alsa-sys will not configure without it.
       - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
+            libwebkit2gtk-4.1-dev             libasound2-dev \
             libappindicator3-dev \
             librsvg2-dev \
             libxdo-dev \
