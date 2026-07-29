@@ -12,6 +12,9 @@ interface FieldDropdownProps {
   options: FieldOption[];
   onChange: (value: string) => void;
   ariaLabel?: string;
+  /** Overrides the closed-button text only. The menu keeps the real field
+   *  names, so the control still says what you would be picking. */
+  displayLabel?: string;
 }
 
 // Matches GroupContextMenu's item styling so menus and dropdowns read as one
@@ -28,7 +31,7 @@ const ITEM_CLASS =
  * descendants, and their overflow-hidden then clips the popup invisible. The
  * Now Playing sidebar is exactly such a container.
  */
-export function FieldDropdown({ value, options, onChange, ariaLabel }: FieldDropdownProps) {
+export function FieldDropdown({ value, options, onChange, ariaLabel, displayLabel }: FieldDropdownProps) {
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState({ left: 0, top: 0, width: 0 });
   const btnRef = useRef<HTMLButtonElement>(null);
@@ -76,7 +79,7 @@ export function FieldDropdown({ value, options, onChange, ariaLabel }: FieldDrop
         aria-label={ariaLabel}
         className="flex-1 min-w-0 flex items-center justify-between gap-1 bg-cosmic-bg/50 border border-cosmic-border/30 rounded text-xs text-gray-300 py-1 px-1.5 hover:border-neon-purple/40 focus:outline-none focus:border-neon-purple/40 transition-colors"
       >
-        <span className="truncate">{selected?.label ?? value}</span>
+        <span className="truncate">{displayLabel ?? selected?.label ?? value}</span>
         <ChevronDownIcon size={10} />
       </button>
 

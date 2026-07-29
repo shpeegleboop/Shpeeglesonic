@@ -7,6 +7,9 @@ interface ColumnHeaderProps {
   field: BrowseField;
   fields: BrowseField[];
   onSetField: (f: BrowseField) => void;
+  /** True when this column is showing an album in its own running order, which
+   *  is no longer what "Track Title" describes. */
+  albumOrder?: boolean;
 }
 
 /**
@@ -16,7 +19,7 @@ interface ColumnHeaderProps {
  * sorted by label, so a direction control there would suggest an ordering the
  * user cannot actually change.
  */
-export function ColumnHeader({ field, fields, onSetField }: ColumnHeaderProps) {
+export function ColumnHeader({ field, fields, onSetField, albumOrder }: ColumnHeaderProps) {
   const order = usePlayerStore((s) => s.browseSortOrder);
   const setOrder = usePlayerStore((s) => s.setBrowseSortOrder);
 
@@ -27,6 +30,9 @@ export function ColumnHeader({ field, fields, onSetField }: ColumnHeaderProps) {
         options={fields.map((f) => ({ value: f, label: FIELD_LABELS[f] }))}
         onChange={(v) => onSetField(v as BrowseField)}
         ariaLabel="Group by"
+        // Only the button text: the menu still offers "Track Title", because
+        // that is the field you would be choosing.
+        displayLabel={albumOrder ? 'Tracks' : undefined}
       />
       {isLeafField(field) && (
         <button

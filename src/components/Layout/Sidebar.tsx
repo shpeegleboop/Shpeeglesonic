@@ -67,6 +67,7 @@ export function Sidebar() {
               field={deepest.field}
               fields={deepest.fields}
               onSetField={(f) => setField(deepest.index, f)}
+              albumOrder={deepest.usesAlbumOrder}
             />
             <div className="flex-1 min-h-0">
               <TrackList

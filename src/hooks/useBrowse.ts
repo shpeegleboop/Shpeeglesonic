@@ -25,6 +25,9 @@ export interface BrowseColumnModel {
   fields: BrowseField[];
   /** True when this column shows tracks rather than group headings. */
   isLeaf: boolean;
+  /** True when this column is an album in its own running order rather than
+   *  alphabetical — drives both the sort and what the header calls itself. */
+  usesAlbumOrder: boolean;
   leafTracks: Track[];
   /** Identifies this column's content for scroll restoration. */
   scrollKey: string;
@@ -64,6 +67,7 @@ export function useBrowse(tracks: Track[], allTracks: Track[]): BrowseModel {
       path.map((step, i) => {
         const visible = filterByPath(tracks, path, i);
         const leaf = isLeafField(step.field);
+        const inAlbum = leaf && step.field === 'title' && albumPinned(path, i);
         return {
           index: i,
           field: step.field,
@@ -72,12 +76,13 @@ export function useBrowse(tracks: Track[], allTracks: Track[]): BrowseModel {
           groups: leaf ? [] : groupsOf(visible, step.field),
           fields: availableFieldsFor(path, i),
           isLeaf: leaf,
+          usesAlbumOrder: inAlbum,
           leafTracks: leaf && isLeafField(step.field)
             // An album pinned above turns the title leaf into that album's
             // running order. This list is also what feeds the queue, so it is
             // the difference between playing an album and playing it shuffled
             // into alphabetical order.
-            ? sortTracks(visible, step.field, sortOrder, albumPinned(path, i))
+            ? sortTracks(visible, step.field, sortOrder, inAlbum)
             : [],
           scrollKey: columnScrollKey(step.field, path.slice(0, i)),
         };
