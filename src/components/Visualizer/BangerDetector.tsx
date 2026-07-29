@@ -164,15 +164,55 @@ export function BangerDetector({ fftRef, lastUpdateRef, width, height }: BangerD
     // Wake order keeps outermost + innermost first: idle is sparse, never small
     const WAKE_PRIORITY = [6, 0, 3, 1, 5, 2, 4];
 
+    // Math.exp is not constant-folded by the JIT, so this was one extra exp
+    // per point on every logarithmic layer.
+    const LOG_DENOM = Math.exp(2.2) - 1;
+
     const radiusOf = (layer: SpiralLayer, frac: number): number => {
       const span = layer.rMax - layer.rMin;
       switch (layer.curve) {
         case 'archimedean':
           return layer.rMin + span * frac;
         case 'logarithmic':
-          return layer.rMin + span * (Math.exp(2.2 * frac) - 1) / (Math.exp(2.2) - 1);
+          return layer.rMin + span * (Math.exp(2.2 * frac) - 1) / LOG_DENOM;
         case 'fermat':
           return layer.rMin + span * Math.sqrt(frac);
+      }
+    };
+
+    // Shockwave shape depends only on maxR, which is fixed for this canvas size
+    const waveSigma = maxR * 0.04;
+    const TWO_SIGMA_SQ = 2 * waveSigma * waveSigma;
+    // Per-wave progress and amplitude: constant across the whole frame, but
+    // they used to be recomputed at every point of every arm.
+    const waveP = new Float64Array(8);
+    const waveA = new Float64Array(8);
+
+    // Per-layer scratch. The radius at point i is identical for every arm and
+    // both passes — only the angle varies — so it is computed once per layer
+    // and indexed, instead of being rebuilt (with its Math.exp calls) once per
+    // arm per pass. At 8 arms that is 16x less work for the same numbers.
+    const radii = new Float64Array(pointsPerArm + 1);
+    // Base-angle trig, computed once per pass; each arm rotates it by its own
+    // offset with the angle-addition identity rather than calling cos/sin again.
+    const cosBase = new Float64Array(pointsPerArm + 1);
+    const sinBase = new Float64Array(pointsPerArm + 1);
+
+    // Spectrum bucket edges are a function of BUCKETS and the bin count, which
+    // the FFT thread fixes at 1024 — 96 Math.pow calls per frame for a table
+    // that never changes. Rebuilt only if the bin count ever does.
+    const BUCKETS = 48;
+    const bucketStart = new Int32Array(BUCKETS);
+    const bucketEnd = new Int32Array(BUCKETS);
+    let edgesForBins = -1;
+    const ensureEdges = (binCount: number) => {
+      if (binCount === edgesForBins) return;
+      edgesForBins = binCount;
+      const usable = Math.floor(binCount * 0.7);
+      for (let b = 0; b < BUCKETS; b++) {
+        const start = Math.floor(Math.pow(b / BUCKETS, 1.7) * usable);
+        bucketStart[b] = start;
+        bucketEnd[b] = Math.max(start + 1, Math.floor(Math.pow((b + 1) / BUCKETS, 1.7) * usable));
       }
     };
 
@@ -193,13 +233,16 @@ export function BangerDetector({ fftRef, lastUpdateRef, width, height }: BangerD
       const tempo = tempoRef.current;
       const crest = crestRef.current;
       crest.update(now, beat.energy.bass * 0.6 + beat.energy.subBass * 0.4);
+      // Read once: gain() spreads up to 100 buckets into Math.max, and nothing
+      // touches them again this frame.
+      const crestGain = crest.gain();
 
       // Intensity: how alive is the music right now? Crest-gated so merely
       // LOUD music can't max the scene — only dynamically spiky material
       // (bangers) unlocks the top of the range. Fast attack, slow release;
       // silence decays to 0 → the idle state: slow, sparse, thin.
       const loudness = Math.min(1, (beat.energy.bass * 0.5 + beat.energy.mids * 0.3 + beat.energy.highs * 0.2) * 1.3);
-      const crestFactor = 0.3 + 0.7 * Math.min(1, crest.gain());
+      const crestFactor = 0.3 + 0.7 * Math.min(1, crestGain);
       const intensityTarget = loudness * crestFactor;
       intensityRef.current = lerp(
         intensityRef.current,
@@ -246,7 +289,7 @@ export function BangerDetector({ fftRef, lastUpdateRef, width, height }: BangerD
         // Torque: pooled, not applied instantly — an instantaneous velocity
         // jump reads as a dropped frame. The pool feeds into spin over ~100ms
         // so a slam is a violent surge, never a teleport.
-        pendingTorqueRef.current += hit * 1.6 * crest.gain() * (0.3 + 0.7 * speed);
+        pendingTorqueRef.current += hit * 1.6 * crestGain * (0.3 + 0.7 * speed);
         wavesRef.current.push({ t0: now, e: hit });
         if (wavesRef.current.length > 5) wavesRef.current.shift();
       }
@@ -264,14 +307,19 @@ export function BangerDetector({ fftRef, lastUpdateRef, width, height }: BangerD
       // Shockwaves carry their hit energy: harder hits ripple bigger
       const WAVE_MS = 900;
       wavesRef.current = wavesRef.current.filter((w) => (now - w.t0) / WAVE_MS < 1.15);
-      const waveSigma = maxR * 0.04;
+      const liveWaves = wavesRef.current;
+      const waveCount = Math.min(liveWaves.length, waveP.length);
+      for (let w = 0; w < waveCount; w++) {
+        waveP[w] = (now - liveWaves[w].t0) / WAVE_MS;
+        // Ripple amplitude scales with the energy of the hit
+        waveA[w] = maxR * 0.022 * (0.4 + liveWaves[w].e);
+      }
 
-      const BUCKETS = 48;
       const spec = specSmoothRef.current;
-      const usable = Math.floor(data.bins.length * 0.7);
+      ensureEdges(data.bins.length);
       for (let b = 0; b < BUCKETS; b++) {
-        const start = Math.floor(Math.pow(b / BUCKETS, 1.7) * usable);
-        const end = Math.max(start + 1, Math.floor(Math.pow((b + 1) / BUCKETS, 1.7) * usable));
+        const start = bucketStart[b];
+        const end = bucketEnd[b];
         let s = 0;
         for (let i = start; i < end; i++) s += data.bins[i] || 0;
         const raw = (s / (end - start)) * sensitivity;
@@ -348,6 +396,28 @@ export function BangerDetector({ fftRef, lastUpdateRef, width, height }: BangerD
         ctx.lineWidth = lineWidth;
         ctx.lineCap = 'round';
 
+        // Radius profile for this layer. Every term below is a function of
+        // frac alone — none of them read arm, pass or direction — so the whole
+        // profile is built once here rather than rebuilt inside both loops.
+        for (let i = 0; i <= pointsPerArm; i++) {
+          const frac = i / pointsPerArm;
+          let rr = radiusOf(layer, frac) * breathe;
+          {
+            const pos = frac * (BUCKETS - 1);
+            const b0 = Math.floor(pos);
+            const t = pos - b0;
+            const v = (spec[b0] ?? 0) * (1 - t) + (spec[Math.min(BUCKETS - 1, b0 + 1)] ?? 0) * t;
+            rr *= 1 + v * 0.25 * (0.4 + frac);
+          }
+          const anchor = Math.min(1, frac * 6);
+          for (let w = 0; w < waveCount; w++) {
+            const p = waveP[w];
+            const d = rr - p * maxR * 1.1;
+            rr += waveA[w] * Math.exp(-(d * d) / TWO_SIGMA_SQ) * (1 - p * 0.6) * anchor;
+          }
+          radii[i] = rr;
+        }
+
         for (let pass = 0; pass < 2; pass++) {
           const dir = pass === 0 ? layer.direction : -layer.direction;
           const phase = pass === 0 ? layer.phase : -layer.phase;
@@ -355,31 +425,25 @@ export function BangerDetector({ fftRef, lastUpdateRef, width, height }: BangerD
           const [pr, pg, pb] = pass === 0 ? [r, g, b] : hslToRgb(passHue, 82 + pulse * 18, Math.min(92, 50 + energy * 22 + pulse * 20 + surge * 10));
           ctx.strokeStyle = `rgba(${pr}, ${pg}, ${pb}, ${Math.min(0.9, alpha) * (pass === 0 ? 1 : 0.8)})`;
 
+          // theta = armOffset + (phase + frac*twist*dir). Only the first term
+          // varies per arm, so the second is evaluated once here and each arm
+          // rotates it by its offset below.
+          for (let i = 0; i <= pointsPerArm; i++) {
+            const a = phase + (i / pointsPerArm) * layer.twist * dir;
+            cosBase[i] = Math.cos(a);
+            sinBase[i] = Math.sin(a);
+          }
+
           for (let arm = 0; arm < arms; arm++) {
             const armOffset = (arm / arms) * Math.PI * 2;
+            const ca = Math.cos(armOffset);
+            const sa = Math.sin(armOffset);
             ctx.beginPath();
             for (let i = 0; i <= pointsPerArm; i++) {
-              const frac = i / pointsPerArm;
-              const theta = armOffset + phase + frac * layer.twist * dir;
-              let rr = radiusOf(layer, frac) * breathe;
-              {
-                const pos = frac * (BUCKETS - 1);
-                const b0 = Math.floor(pos);
-                const t = pos - b0;
-                const v = (spec[b0] ?? 0) * (1 - t) + (spec[Math.min(BUCKETS - 1, b0 + 1)] ?? 0) * t;
-                rr *= 1 + v * 0.25 * (0.4 + frac);
-              }
-              const anchor = Math.min(1, frac * 6);
-              for (let w = 0; w < wavesRef.current.length; w++) {
-                const wave = wavesRef.current[w];
-                const p = (now - wave.t0) / WAVE_MS;
-                const d = rr - p * maxR * 1.1;
-                // Ripple amplitude scales with the energy of the hit
-                const amp = maxR * 0.022 * (0.4 + wave.e);
-                rr += amp * Math.exp(-(d * d) / (2 * waveSigma * waveSigma)) * (1 - p * 0.6) * anchor;
-              }
-              const x = cx + Math.cos(theta) * rr;
-              const y = cy + Math.sin(theta) * rr;
+              const rr = radii[i];
+              // cos(base + off) and sin(base + off), expanded
+              const x = cx + (cosBase[i] * ca - sinBase[i] * sa) * rr;
+              const y = cy + (sinBase[i] * ca + cosBase[i] * sa) * rr;
               if (i === 0) ctx.moveTo(x, y);
               else ctx.lineTo(x, y);
             }

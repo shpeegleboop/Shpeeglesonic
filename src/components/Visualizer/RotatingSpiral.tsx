@@ -113,15 +113,52 @@ export function RotatingSpiral({ fftRef, lastUpdateRef, width, height }: Rotatin
       l.rMax = maxR * (0.5 + i * 0.14);
     });
 
+    // Math.exp is not constant-folded by the JIT, so this was one extra exp
+    // per point on every logarithmic layer.
+    const LOG_DENOM = Math.exp(2.2) - 1;
+
     const radiusOf = (layer: SpiralLayer, frac: number): number => {
       const span = layer.rMax - layer.rMin;
       switch (layer.curve) {
         case 'archimedean':
           return layer.rMin + span * frac;
         case 'logarithmic':
-          return layer.rMin + span * (Math.exp(2.2 * frac) - 1) / (Math.exp(2.2) - 1);
+          return layer.rMin + span * (Math.exp(2.2 * frac) - 1) / LOG_DENOM;
         case 'fermat':
           return layer.rMin + span * Math.sqrt(frac);
+      }
+    };
+
+    // Shockwave shape depends only on maxR, which is fixed for this canvas size
+    const waveSigma = maxR * 0.04;
+    const waveAmp = maxR * 0.022;
+    const TWO_SIGMA_SQ = 2 * waveSigma * waveSigma;
+
+    // Per-layer scratch. The radius at point i is identical for every arm and
+    // both passes — only the angle varies — so it is computed once per layer
+    // and indexed, instead of being rebuilt (with its Math.exp calls) once per
+    // arm per pass. At 8 arms that is 16x less work for the same numbers.
+    const radii = new Float64Array(pointsPerArm + 1);
+    // Base-angle trig, computed once per pass; each arm rotates it by its own
+    // offset with the angle-addition identity rather than calling cos/sin again.
+    const cosBase = new Float64Array(pointsPerArm + 1);
+    const sinBase = new Float64Array(pointsPerArm + 1);
+
+    // Spectrum bucket edges are a function of BUCKETS and the bin count, which
+    // the FFT thread fixes at 1024 — 96 Math.pow calls per frame for a table
+    // that never changes. Rebuilt only if the bin count ever does.
+    const BUCKETS = 48;
+    const bucketStart = new Int32Array(BUCKETS);
+    const bucketEnd = new Int32Array(BUCKETS);
+    let edgesForBins = -1;
+    const ensureEdges = (binCount: number) => {
+      if (binCount === edgesForBins) return;
+      edgesForBins = binCount;
+      const usable = Math.floor(binCount * 0.7);
+      for (let b = 0; b < BUCKETS; b++) {
+        const start = Math.floor(Math.pow(b / BUCKETS, 1.7) * usable);
+        bucketStart[b] = start;
+        bucketEnd[b] = Math.max(start + 1, Math.floor(Math.pow((b + 1) / BUCKETS, 1.7) * usable));
       }
     };
 
@@ -152,19 +189,16 @@ export function RotatingSpiral({ fftRef, lastUpdateRef, width, height }: Rotatin
       const WAVE_MS = 900;
       wavesRef.current = wavesRef.current.filter((t0) => (now - t0) / WAVE_MS < 1.15);
       const waves = wavesRef.current.map((t0) => (now - t0) / WAVE_MS);
-      const waveSigma = maxR * 0.04;
-      const waveAmp = maxR * 0.022;
 
       // Spectrum-woven arms: bucket the FFT once per frame; arm points sample
       // it by radius fraction (low freqs inner, highs at the tips)
       // Spectrum-woven arms (always on, full strength): bucket the FFT once
       // per frame; arm points sample it by radius fraction.
-      const BUCKETS = 48;
       const spec = specSmoothRef.current;
-      const usable = Math.floor(data.bins.length * 0.7);
+      ensureEdges(data.bins.length);
       for (let b = 0; b < BUCKETS; b++) {
-        const start = Math.floor(Math.pow(b / BUCKETS, 1.7) * usable);
-        const end = Math.max(start + 1, Math.floor(Math.pow((b + 1) / BUCKETS, 1.7) * usable));
+        const start = bucketStart[b];
+        const end = bucketEnd[b];
         let s = 0;
         for (let i = start; i < end; i++) s += data.bins[i] || 0;
         const raw = (s / (end - start)) * sensitivity;
@@ -214,6 +248,32 @@ export function RotatingSpiral({ fftRef, lastUpdateRef, width, height }: Rotatin
         ctx.lineWidth = lineWidth;
         ctx.lineCap = 'round';
 
+        // Radius profile for this layer. Every term below is a function of
+        // frac alone — none of them read arm, pass or direction — so the whole
+        // profile is built once here rather than rebuilt inside both loops.
+        for (let i = 0; i <= pointsPerArm; i++) {
+          const frac = i / pointsPerArm;
+          let rr = radiusOf(layer, frac) * breathe;
+          // Spectrum weave: arms bulge with the live FFT along their length
+          // (inter-bucket lerp keeps the curve smooth)
+          {
+            const pos = frac * (BUCKETS - 1);
+            const b0 = Math.floor(pos);
+            const t = pos - b0;
+            const v = (spec[b0] ?? 0) * (1 - t) + (spec[Math.min(BUCKETS - 1, b0 + 1)] ?? 0) * t;
+            rr *= 1 + v * 0.25 * (0.4 + frac);
+          }
+          // Center anchor: all radial displacement fades to zero at the
+          // convergence point so beats never punch a hole in the middle
+          const anchor = Math.min(1, frac * 6);
+          // Shockwaves: gaussian bump where each ripple front crosses this radius
+          for (let w = 0; w < waves.length; w++) {
+            const d = rr - waves[w] * maxR * 1.1;
+            rr += waveAmp * Math.exp(-(d * d) / TWO_SIGMA_SQ) * (1 - waves[w] * 0.6) * anchor;
+          }
+          radii[i] = rr;
+        }
+
         // Two passes: the spiral and its mirror twin rotating the opposite
         // way — every layer is always paired, so the image stays symmetric
         // and reads as counter-rotation everywhere.
@@ -224,32 +284,25 @@ export function RotatingSpiral({ fftRef, lastUpdateRef, width, height }: Rotatin
           const [pr, pg, pb] = pass === 0 ? [r, g, b] : hslToRgb(passHue, 82 + pulse * 18, Math.min(90, 50 + energy * 22 + pulse * 20));
           ctx.strokeStyle = `rgba(${pr}, ${pg}, ${pb}, ${Math.min(0.9, alpha) * (pass === 0 ? 1 : 0.8)})`;
 
+          // theta = armOffset + (phase + frac*twist*dir). Only the first term
+          // varies per arm, so the second is evaluated once here and each arm
+          // rotates it by its offset below.
+          for (let i = 0; i <= pointsPerArm; i++) {
+            const a = phase + (i / pointsPerArm) * layer.twist * dir;
+            cosBase[i] = Math.cos(a);
+            sinBase[i] = Math.sin(a);
+          }
+
           for (let arm = 0; arm < arms; arm++) {
             const armOffset = (arm / arms) * Math.PI * 2;
+            const ca = Math.cos(armOffset);
+            const sa = Math.sin(armOffset);
             ctx.beginPath();
             for (let i = 0; i <= pointsPerArm; i++) {
-              const frac = i / pointsPerArm;
-              const theta = armOffset + phase + frac * layer.twist * dir;
-              let rr = radiusOf(layer, frac) * breathe;
-              // Spectrum weave: arms bulge with the live FFT along their length
-              // (inter-bucket lerp keeps the curve smooth)
-              {
-                const pos = frac * (BUCKETS - 1);
-                const b0 = Math.floor(pos);
-                const t = pos - b0;
-                const v = (spec[b0] ?? 0) * (1 - t) + (spec[Math.min(BUCKETS - 1, b0 + 1)] ?? 0) * t;
-                rr *= 1 + v * 0.25 * (0.4 + frac);
-              }
-              // Center anchor: all radial displacement fades to zero at the
-              // convergence point so beats never punch a hole in the middle
-              const anchor = Math.min(1, frac * 6);
-              // Shockwaves: gaussian bump where each ripple front crosses this radius
-              for (let w = 0; w < waves.length; w++) {
-                const d = rr - waves[w] * maxR * 1.1;
-                rr += waveAmp * Math.exp(-(d * d) / (2 * waveSigma * waveSigma)) * (1 - waves[w] * 0.6) * anchor;
-              }
-              const x = cx + Math.cos(theta) * rr;
-              const y = cy + Math.sin(theta) * rr;
+              const rr = radii[i];
+              // cos(base + off) and sin(base + off), expanded
+              const x = cx + (cosBase[i] * ca - sinBase[i] * sa) * rr;
+              const y = cy + (sinBase[i] * ca + cosBase[i] * sa) * rr;
               if (i === 0) ctx.moveTo(x, y);
               else ctx.lineTo(x, y);
             }
