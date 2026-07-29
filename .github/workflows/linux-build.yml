@@ -1,0 +1,82 @@
+# Builds for Linux, which nothing else does — the Windows release is built and
+# verified by hand on a Windows machine and never goes near CI.
+#
+# Deliberately read-only. It uploads workflow artifacts and nothing else: it
+# does not create releases, move tags, or push commits, so it cannot disturb an
+# existing release. `permissions: contents: read` enforces that rather than
+# relying on the workflow to behave.
+name: Linux build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    # Pinned rather than ubuntu-latest: the runner image sets the glibc the
+    # artifacts are built against, and a silent bump would change who can run
+    # them. Newer distros run older-glibc builds; the reverse is not true.
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # Tauri v2 needs webkit2gtk 4.1; the 4.0 packages are for v1 and will not
+      # satisfy it.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            libssl-dev \
+            build-essential \
+            curl wget file patchelf
+
+      - run: npm ci
+
+      - name: Typecheck and test
+        run: |
+          npx tsc --noEmit
+          npx vitest run
+
+      # tauri.linux.conf.json clears externalBin, so no ffmpeg sidecar is
+      # expected here — the app resolves ffmpeg from PATH on Linux.
+      - name: Build
+        run: npm run tauri build
+
+      # Uploaded separately: if the bundlers fail but the binary linked, the
+      # binary is still the useful half, and on Arch it is arguably the more
+      # useful one.
+      - name: Upload bundles
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-bundles
+          path: src-tauri/target/release/bundle/**
+          if-no-files-found: warn
+
+      - name: Upload raw binary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-binary
+          path: src-tauri/target/release/shpeeglesonic
+          if-no-files-found: warn
