@@ -2,7 +2,7 @@ use cpal::traits::StreamTrait;
 use cpal::Stream;
 use crossbeam_channel::{Receiver, Sender};
 use ringbuf::traits::{Producer, Split};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 
 use super::output;
@@ -10,6 +10,44 @@ use super::output;
 pub const STATE_STOPPED: u8 = 0;
 pub const STATE_PLAYING: u8 = 1;
 pub const STATE_PAUSED: u8 = 2;
+
+/// The output backend currently in use. cpal covers every platform in shared
+/// mode; the exclusive variant is Windows-only and owns the endpoint outright.
+pub enum ActiveStream {
+    Cpal(Stream),
+    #[cfg(windows)]
+    Exclusive(super::exclusive::ExclusiveStream),
+}
+
+impl ActiveStream {
+    fn play(&self) -> Result<(), String> {
+        match self {
+            ActiveStream::Cpal(s) => s.play().map_err(|e| format!("Failed to resume: {}", e)),
+            #[cfg(windows)]
+            ActiveStream::Exclusive(s) => s.play(),
+        }
+    }
+
+    fn pause(&self) -> Result<(), String> {
+        match self {
+            ActiveStream::Cpal(s) => s.pause().map_err(|e| format!("Failed to pause: {}", e)),
+            #[cfg(windows)]
+            ActiveStream::Exclusive(s) => s.pause(),
+        }
+    }
+}
+
+/// One opened output, before the decode thread is attached to it.
+struct OpenedOutput {
+    stream: ActiveStream,
+    producer: ringbuf::HeapProd<f32>,
+    sample_rate: u32,
+    channels: u16,
+    exclusive: bool,
+    /// Meaningful bits per sample, exclusive mode only — shared mode is
+    /// whatever the Windows engine decides downstream of us.
+    bits: Option<u16>,
+}
 
 /// Commands sent from the main thread to the decode thread.
 pub enum DecodeCommand {
@@ -36,16 +74,31 @@ pub struct AudioEngine {
     pub samples_played: Arc<AtomicU64>,
     /// Set to true when a track finishes naturally (not stopped by user)
     pub track_ended_naturally: Arc<AtomicBool>,
-    active_stream: Option<Stream>,
+    active_stream: Option<ActiveStream>,
     /// Send commands to the decode thread
     cmd_tx: Option<Sender<DecodeCommand>>,
     /// Handle for the decode thread
     decode_handle: Option<std::thread::JoinHandle<()>>,
     /// FFT data sender — audio samples go here for analysis
     pub fft_sender: Option<Sender<Vec<f32>>>,
-    /// Device info
+    /// The rate and channel count actually being fed to the device right now.
+    /// In exclusive mode this follows the file, so it changes per track.
     pub device_sample_rate: u32,
     pub device_channels: u16,
+    /// cpal's shared-mode defaults — the Windows mix format, and the fallback
+    /// whenever exclusive mode is off or the device refuses it.
+    default_sample_rate: u32,
+    default_channels: u16,
+    /// Mirrors of the active rate for the FFT thread, which outlives any one
+    /// track and needs its position maths to follow the stream.
+    pub active_rate: Arc<AtomicU32>,
+    pub active_channels: Arc<AtomicU32>,
+    /// Output settings, applied on the next track load.
+    pub exclusive_enabled: bool,
+    pub output_device_id: Option<String>,
+    /// What actually got opened, for the settings readout.
+    pub active_exclusive: bool,
+    pub active_bits: Option<u16>,
     device: cpal::Device,
     /// Current track info
     pub current_track: Option<TrackInfo>,
@@ -74,10 +127,102 @@ impl AudioEngine {
             fft_sender: None,
             device_sample_rate,
             device_channels,
+            default_sample_rate: device_sample_rate,
+            default_channels: device_channels,
+            active_rate: Arc::new(AtomicU32::new(device_sample_rate)),
+            active_channels: Arc::new(AtomicU32::new(device_channels as u32)),
+            exclusive_enabled: false,
+            output_device_id: None,
+            active_exclusive: false,
+            active_bits: None,
             device,
             current_track: None,
             app_handle: None,
             seek_flush: Arc::new(AtomicBool::new(false)),
+        })
+    }
+
+    /// Ring buffer holding ~100ms of audio, sized for the rate being opened.
+    fn make_ring(rate: u32, channels: u16) -> (ringbuf::HeapProd<f32>, ringbuf::HeapCons<f32>) {
+        let frames = (rate as usize * channels.max(1) as usize / 10).max(4096);
+        ringbuf::HeapRb::<f32>::new(frames).split()
+    }
+
+    /// Pick and open the output for one track.
+    ///
+    /// Exclusive mode is tried at the file's own rate first — that is the whole
+    /// point of it, since shared mode forces every file through one mix format.
+    /// If the device refuses that rate it is retried at the shared default, and
+    /// if exclusive fails outright the track still plays: it falls back to cpal
+    /// rather than leaving the user with silence and an error.
+    fn open_output(&mut self, file_sr: u32) -> Result<OpenedOutput, String> {
+        #[cfg(windows)]
+        {
+            if self.exclusive_enabled {
+                let mut rates = vec![file_sr];
+                if file_sr != self.default_sample_rate {
+                    rates.push(self.default_sample_rate);
+                }
+                for rate in rates {
+                    let fmt = match super::exclusive::probe(
+                        self.output_device_id.clone(),
+                        rate,
+                        self.default_channels,
+                    ) {
+                        Ok(fmt) => fmt,
+                        Err(e) => {
+                            println!("Exclusive mode unavailable at {} Hz: {}", rate, e);
+                            continue;
+                        }
+                    };
+                    let (producer, consumer) = Self::make_ring(fmt.sample_rate, fmt.channels);
+                    match super::exclusive::open(
+                        self.output_device_id.clone(),
+                        fmt.sample_rate,
+                        fmt.channels,
+                        consumer,
+                        self.volume.clone(),
+                        self.samples_played.clone(),
+                        self.playback_state.clone(),
+                        self.seek_flush.clone(),
+                    ) {
+                        Ok(stream) => {
+                            return Ok(OpenedOutput {
+                                stream: ActiveStream::Exclusive(stream),
+                                producer,
+                                sample_rate: fmt.sample_rate,
+                                channels: fmt.channels,
+                                exclusive: true,
+                                bits: Some(fmt.valid_bits),
+                            })
+                        }
+                        Err(e) => println!("Exclusive open at {} Hz failed: {}", fmt.sample_rate, e),
+                    }
+                }
+                println!("Falling back to shared mode");
+            }
+        }
+
+        let rate = self.default_sample_rate;
+        let channels = self.default_channels;
+        let (producer, consumer) = Self::make_ring(rate, channels);
+        let stream = output::build_output_stream(
+            &self.device,
+            rate,
+            channels,
+            consumer,
+            self.volume.clone(),
+            self.samples_played.clone(),
+            self.playback_state.clone(),
+            self.seek_flush.clone(),
+        )?;
+        Ok(OpenedOutput {
+            stream: ActiveStream::Cpal(stream),
+            producer,
+            sample_rate: rate,
+            channels,
+            exclusive: false,
+            bits: None,
         })
     }
 
@@ -120,35 +265,30 @@ impl AudioEngine {
 
         let file_sr = probe.sample_rate;
         let file_ch = probe.channels;
+
+        // Reset position and seek state before anything starts pulling audio —
+        // the exclusive render thread begins the moment it is opened.
+        self.samples_played.store(0, Ordering::Relaxed);
+        self.seek_flush.store(false, Ordering::Release);
+
+        // The output decides the rate, not the other way around: exclusive mode
+        // opens at the file's own rate when the device allows it.
+        let opened = self.open_output(file_sr)?;
+        self.device_sample_rate = opened.sample_rate;
+        self.device_channels = opened.channels;
+        self.active_rate.store(opened.sample_rate, Ordering::Relaxed);
+        self.active_channels
+            .store(opened.channels as u32, Ordering::Relaxed);
+        self.active_exclusive = opened.exclusive;
+        self.active_bits = opened.bits;
+
         // ffmpeg emits at the device rate already, so resampling only ever
         // applies to the symphonia branch.
         let needs_resample = backend == super::decoder::Backend::Symphonia
             && file_sr != self.device_sample_rate;
 
-        // Ring buffer: ~100ms of audio (tight sync with visuals)
-        let ch = self.device_channels as usize;
-        let buf_size = (self.device_sample_rate as usize * ch / 10).max(4096);
-        let rb = ringbuf::HeapRb::<f32>::new(buf_size);
-        let (producer, consumer) = rb.split();
-
-        // Reset position counter
-        self.samples_played.store(0, Ordering::Relaxed);
-
-        // Reset seek flush flag
-        self.seek_flush.store(false, Ordering::Release);
-
-        // Build output stream
-        let stream = output::build_output_stream(
-            &self.device,
-            self.device_sample_rate,
-            self.device_channels,
-            consumer,
-            self.volume.clone(),
-            self.samples_played.clone(),
-            self.playback_state.clone(),
-            self.seek_flush.clone(),
-        )?;
-        self.active_stream = Some(stream);
+        let producer = opened.producer;
+        self.active_stream = Some(opened.stream);
 
         // Create command channel for decode thread
         let (cmd_tx, cmd_rx) = crossbeam_channel::bounded::<DecodeCommand>(16);
@@ -227,9 +367,7 @@ impl AudioEngine {
 
     pub fn pause(&mut self) -> Result<(), String> {
         if let Some(ref stream) = self.active_stream {
-            stream
-                .pause()
-                .map_err(|e| format!("Failed to pause: {}", e))?;
+            stream.pause()?;
             self.playback_state.store(STATE_PAUSED, Ordering::Relaxed);
         }
         Ok(())
@@ -237,12 +375,18 @@ impl AudioEngine {
 
     pub fn resume(&mut self) -> Result<(), String> {
         if let Some(ref stream) = self.active_stream {
-            stream
-                .play()
-                .map_err(|e| format!("Failed to resume: {}", e))?;
+            stream.play()?;
             self.playback_state.store(STATE_PLAYING, Ordering::Relaxed);
         }
         Ok(())
+    }
+
+    /// Output settings. They take effect on the next track load rather than
+    /// mid-track: switching share mode means tearing down the endpoint, and
+    /// doing that under a playing stream is how you lose the device.
+    pub fn set_output_config(&mut self, exclusive: bool, device_id: Option<String>) {
+        self.exclusive_enabled = exclusive;
+        self.output_device_id = device_id;
     }
 
     pub fn seek(&mut self, position_seconds: f64) -> Result<(), String> {

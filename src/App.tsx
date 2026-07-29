@@ -55,6 +55,17 @@ function App() {
     document.documentElement.style.fontSize = `${pct}%`;
   }, [fontScale]);
 
+  // The output preference lives in the persisted store, but the engine is
+  // rebuilt on every launch and starts in shared mode — push it back down once
+  // the store has rehydrated, or exclusive silently stays off after a restart.
+  useEffect(() => {
+    const { outputExclusive, outputDeviceId } = usePlayerStore.getState();
+    invoke('set_output_config', {
+      exclusive: outputExclusive,
+      deviceId: outputDeviceId,
+    }).catch((e) => console.error('Failed to apply output config:', e));
+  }, []);
+
   // Fullscreen visualizer = real OS fullscreen, not just filling the window
   useEffect(() => {
     import('@tauri-apps/api/window').then(({ getCurrentWindow }) => {

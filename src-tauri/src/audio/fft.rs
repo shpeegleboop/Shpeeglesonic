@@ -45,8 +45,8 @@ pub fn spawn_fft_thread(
     samples_played: Arc<AtomicU64>,
     playback_state: Arc<AtomicU8>,
     track_ended_naturally: Arc<std::sync::atomic::AtomicBool>,
-    device_sample_rate: u32,
-    device_channels: u16,
+    device_sample_rate: Arc<std::sync::atomic::AtomicU32>,
+    device_channels: Arc<std::sync::atomic::AtomicU32>,
 ) -> crossbeam_channel::Sender<Vec<f32>> {
     let (tx, rx) = crossbeam_channel::bounded::<Vec<f32>>(64);
 
@@ -71,8 +71,10 @@ fn fft_loop(
     samples_played: Arc<AtomicU64>,
     playback_state: Arc<AtomicU8>,
     track_ended_naturally: Arc<std::sync::atomic::AtomicBool>,
-    device_sample_rate: u32,
-    device_channels: u16,
+    // Read per use, not captured: in exclusive mode the stream is reopened at
+    // the file's own rate, so these change from one track to the next.
+    device_sample_rate: Arc<std::sync::atomic::AtomicU32>,
+    device_channels: Arc<std::sync::atomic::AtomicU32>,
 ) {
     let mut planner = FftPlanner::<f32>::new();
     let fft = planner.plan_fft_forward(FFT_SIZE);
@@ -103,7 +105,7 @@ fn fft_loop(
             match rx.try_recv() {
                 Ok(chunk) => {
                     got_data = true;
-                    ingest(&chunk, device_channels, &mut accumulator, &mut acc_l, &mut acc_r);
+                    ingest(&chunk, device_channels.load(Ordering::Relaxed) as u16, &mut accumulator, &mut acc_l, &mut acc_r);
                 }
                 Err(_) => break,
             }
@@ -112,7 +114,7 @@ fn fft_loop(
         if !got_data {
             match rx.recv_timeout(std::time::Duration::from_millis(4)) {
                 Ok(chunk) => {
-                    ingest(&chunk, device_channels, &mut accumulator, &mut acc_l, &mut acc_r);
+                    ingest(&chunk, device_channels.load(Ordering::Relaxed) as u16, &mut accumulator, &mut acc_l, &mut acc_r);
                 }
                 Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
                 Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
@@ -192,6 +194,8 @@ fn fft_loop(
 
             // Get current position
             let total_samples = samples_played.load(Ordering::Relaxed);
+            let device_channels = device_channels.load(Ordering::Relaxed) as u16;
+            let device_sample_rate = device_sample_rate.load(Ordering::Relaxed);
             let time = if device_channels > 0 && device_sample_rate > 0 {
                 total_samples as f64
                     / (device_sample_rate as f64 * device_channels as f64)

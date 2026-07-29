@@ -196,6 +196,12 @@ interface PlayerState {
   fontScale: FontScale;
   setFontScale: (scale: FontScale) => void;
 
+  /** Windows exclusive-mode output. Applied by Rust on the next track load. */
+  outputExclusive: boolean;
+  /** WASAPI endpoint id, or null for whatever Windows calls default. */
+  outputDeviceId: string | null;
+  setOutputConfig: (exclusive: boolean, deviceId: string | null) => void;
+
   // Actions
   setCurrentTrack: (track: Track | null) => void;
   setTrackInfo: (info: TrackInfo | null) => void;
@@ -276,6 +282,8 @@ export const usePlayerStore = create<PlayerState>()(
   browseSearch: '',
   browseColumnWidths: {} as Record<number, number>,
   fontScale: 'default' as FontScale,
+  outputExclusive: false,
+  outputDeviceId: null as string | null,
   lyricsVisible: false,
   queueVisible: true,
   currentView: 'nowPlaying',
@@ -493,6 +501,8 @@ export const usePlayerStore = create<PlayerState>()(
   setBrowsePath: (browsePath) => set({ browsePath }),
   setBrowseSortOrder: (browseSortOrder) => set({ browseSortOrder }),
   setFontScale: (fontScale) => set({ fontScale }),
+  setOutputConfig: (outputExclusive, outputDeviceId) =>
+    set({ outputExclusive, outputDeviceId }),
   setBrowseColumnWidth: (index, width) =>
     set((s) => {
       const next = { ...s.browseColumnWidths };
@@ -543,6 +553,8 @@ export const usePlayerStore = create<PlayerState>()(
         browseSearch: s.browseSearch,
         browseColumnWidths: s.browseColumnWidths,
         fontScale: s.fontScale,
+        outputExclusive: s.outputExclusive,
+        outputDeviceId: s.outputDeviceId,
       }),
       // Deep-merge visualizerSettings so new fields keep their defaults
       // when restoring state saved by an older version

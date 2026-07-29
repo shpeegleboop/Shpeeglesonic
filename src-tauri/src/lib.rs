@@ -37,8 +37,8 @@ pub fn run() {
                 engine.samples_played.clone(),
                 engine.playback_state.clone(),
                 engine.track_ended_naturally.clone(),
-                engine.device_sample_rate,
-                engine.device_channels,
+                engine.active_rate.clone(),
+                engine.active_channels.clone(),
             );
             engine.set_fft_sender(fft_sender);
             engine.set_app_handle(app.handle().clone());
@@ -59,6 +59,10 @@ pub fn run() {
             commands::get_waveform_overview,
             commands::seek,
             commands::set_volume,
+            // Output device
+            commands::list_output_devices,
+            commands::set_output_config,
+            commands::get_output_status,
             commands::get_playback_state,
             // Library
             commands::scan_folder,

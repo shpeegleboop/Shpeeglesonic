@@ -5,6 +5,7 @@ import { useLibrary } from '../../hooks/useLibrary';
 import { usePlayerStore, FONT_SCALES, type FontScale } from '../../stores/playerStore';
 import { DuplicatesModal } from '../Library/DuplicatesModal';
 import { ConfirmDialog } from '../ConfirmDialog';
+import { OutputSettings } from './OutputSettings';
 
 export function SettingsPanel() {
   const library = useLibrary();
@@ -182,6 +183,8 @@ export function SettingsPanel() {
 
         {showDuplicates && <DuplicatesModal onClose={() => setShowDuplicates(false)} />}
       </section>
+
+      <OutputSettings />
 
       {/* Visualizer Settings */}
       <section className="glass-panel p-4 space-y-4">

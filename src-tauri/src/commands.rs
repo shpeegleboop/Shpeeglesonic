@@ -492,3 +492,80 @@ pub async fn get_waveform_overview(
     .await
     .map_err(|e| format!("waveform task failed: {}", e))?
 }
+
+// ─── Output Device Commands ────────────────────────────────────────────
+
+/// One selectable output endpoint.
+#[derive(serde::Serialize)]
+pub struct OutputDeviceInfo {
+    pub id: String,
+    pub name: String,
+    pub is_default: bool,
+}
+
+/// What the output is actually doing right now, for the settings readout.
+/// `sample_rate` is the rate being fed to the device, which in exclusive mode
+/// follows the file and in shared mode is always the Windows mix format.
+#[derive(serde::Serialize)]
+pub struct OutputStatus {
+    pub sample_rate: u32,
+    pub channels: u16,
+    pub bit_depth: Option<u16>,
+    pub exclusive: bool,
+    /// True when the file's own rate is being converted to reach the device.
+    pub resampling: bool,
+    pub file_sample_rate: Option<u32>,
+    /// Set when exclusive mode is switched on but the device is not running it,
+    /// so the UI can say why instead of silently lying.
+    pub exclusive_requested: bool,
+}
+
+#[command]
+pub fn list_output_devices() -> Result<Vec<OutputDeviceInfo>, String> {
+    #[cfg(windows)]
+    {
+        let devices = crate::audio::exclusive::list_devices()?;
+        return Ok(devices
+            .into_iter()
+            .map(|d| OutputDeviceInfo {
+                id: d.id,
+                name: d.name,
+                is_default: d.is_default,
+            })
+            .collect());
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(Vec::new())
+    }
+}
+
+#[command]
+pub fn set_output_config(
+    exclusive: bool,
+    device_id: Option<String>,
+    engine: State<'_, AudioEngineState>,
+) -> Result<(), String> {
+    let mut engine = engine.lock().map_err(|e| e.to_string())?;
+    engine.set_output_config(exclusive, device_id);
+    Ok(())
+}
+
+#[command]
+pub fn get_output_status(engine: State<'_, AudioEngineState>) -> Result<OutputStatus, String> {
+    let engine = engine.lock().map_err(|e| e.to_string())?;
+    let file_sample_rate = engine.current_track.as_ref().map(|t| t.sample_rate);
+    Ok(OutputStatus {
+        sample_rate: engine.device_sample_rate,
+        channels: engine.device_channels,
+        bit_depth: engine.active_bits,
+        exclusive: engine.active_exclusive,
+        // DSD is decoded to PCM long before this point, so a DSD file always
+        // reads as converted regardless of share mode.
+        resampling: file_sample_rate
+            .map(|sr| sr != engine.device_sample_rate)
+            .unwrap_or(false),
+        file_sample_rate,
+        exclusive_requested: engine.exclusive_enabled,
+    })
+}
