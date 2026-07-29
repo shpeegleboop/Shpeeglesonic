@@ -383,3 +383,73 @@ describe('isPicked reads paths saved before the flag existed', () => {
     expect(isPicked({ field: 'artist', value: 'Radiohead', picked: false })).toBe(false);
   });
 });
+
+// Inside one album, "sort by track title" has to mean the order the artist put
+// them in. This list also feeds the queue, so alphabetical ordering here is the
+// difference between playing an album and playing it scrambled.
+describe('sortTracks in album order', () => {
+  const ALBUM: Track[] = [
+    track({ id: 1, title: 'Because', track_number: 8 }),
+    track({ id: 2, title: 'Come Together', track_number: 1 }),
+    track({ id: 3, title: 'Something', track_number: 2 }),
+  ];
+
+  it('uses track number instead of the alphabet when an album is pinned', () => {
+    expect(sortTracks(ALBUM, 'title', 'asc', true).map((t) => t.id)).toEqual([2, 3, 1]);
+  });
+
+  it('still sorts alphabetically when no album is pinned', () => {
+    expect(sortTracks(ALBUM, 'title', 'asc', false).map((t) => t.id)).toEqual([1, 2, 3]);
+  });
+
+  it('reverses with the sort direction', () => {
+    expect(sortTracks(ALBUM, 'title', 'desc', true).map((t) => t.id)).toEqual([1, 3, 2]);
+  });
+
+  // A double album must not interleave disc 2 into disc 1.
+  it('orders by disc before track number', () => {
+    const multi: Track[] = [
+      track({ id: 1, title: 'd2t1', disc_number: 2, track_number: 1 }),
+      track({ id: 2, title: 'd1t2', disc_number: 1, track_number: 2 }),
+      track({ id: 3, title: 'd1t1', disc_number: 1, track_number: 1 }),
+    ];
+    expect(sortTracks(multi, 'title', 'asc', true).map((t) => t.id)).toEqual([3, 2, 1]);
+  });
+
+  // Single-disc releases routinely leave the disc tag empty. Treating that as
+  // absent rather than disc 1 would sort them after a tagged disc 2.
+  it('treats a missing disc number as disc 1', () => {
+    const mixed: Track[] = [
+      track({ id: 1, title: 'later disc', disc_number: 2, track_number: 1 }),
+      track({ id: 2, title: 'untagged disc', disc_number: null, track_number: 5 }),
+    ];
+    expect(sortTracks(mixed, 'title', 'asc', true).map((t) => t.id)).toEqual([2, 1]);
+  });
+
+  // Same rule as every other absent value in this module.
+  it('sinks untracked files below numbered ones, in both directions', () => {
+    const partial: Track[] = [
+      track({ id: 1, title: 'aaa no number' }),
+      track({ id: 2, title: 'zzz numbered', track_number: 3 }),
+    ];
+    expect(sortTracks(partial, 'title', 'asc', true).map((t) => t.id)).toEqual([2, 1]);
+    expect(sortTracks(partial, 'title', 'desc', true).map((t) => t.id)).toEqual([2, 1]);
+  });
+
+  it('falls back to the title when nothing carries a track number', () => {
+    const untagged: Track[] = [
+      track({ id: 1, title: 'beta' }),
+      track({ id: 2, title: 'alpha' }),
+    ];
+    expect(sortTracks(untagged, 'title', 'asc', true).map((t) => t.id)).toEqual([2, 1]);
+  });
+
+  // Ordering by BPM inside an album is an explicit request for BPM order.
+  it('leaves the other leaf fields alone', () => {
+    const byBpm: Track[] = [
+      track({ id: 1, bpm: 170, track_number: 1 }),
+      track({ id: 2, bpm: 90, track_number: 2 }),
+    ];
+    expect(sortTracks(byBpm, 'bpm', 'asc', true).map((t) => t.id)).toEqual([2, 1]);
+  });
+});

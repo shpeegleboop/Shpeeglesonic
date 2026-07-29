@@ -7,6 +7,11 @@ import {
 } from '../utils/browsePath';
 import { columnScrollKey } from '../utils/scrollMemory';
 
+/** True when a specific album is selected above column `index`. */
+function albumPinned(path: BrowseStep[], index: number): boolean {
+  return path.slice(0, index).some((s) => s.field === 'album' && isPicked(s));
+}
+
 export interface BrowseColumnModel {
   index: number;
   field: BrowseField;
@@ -68,7 +73,11 @@ export function useBrowse(tracks: Track[], allTracks: Track[]): BrowseModel {
           fields: availableFieldsFor(path, i),
           isLeaf: leaf,
           leafTracks: leaf && isLeafField(step.field)
-            ? sortTracks(visible, step.field, sortOrder)
+            // An album pinned above turns the title leaf into that album's
+            // running order. This list is also what feeds the queue, so it is
+            // the difference between playing an album and playing it shuffled
+            // into alphabetical order.
+            ? sortTracks(visible, step.field, sortOrder, albumPinned(path, i))
             : [],
           scrollKey: columnScrollKey(step.field, path.slice(0, i)),
         };

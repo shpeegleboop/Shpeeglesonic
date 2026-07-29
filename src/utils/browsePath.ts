@@ -197,10 +197,52 @@ function leafKey(t: Track, field: LeafField): string | number | null {
   }
 }
 
-/** Order a track list by a leaf field. Untagged tracks sink to the bottom
- *  regardless of direction — they are absent data, not a low value. */
-export function sortTracks(tracks: Track[], field: LeafField, order: 'asc' | 'desc'): Track[] {
+const titleOf = (t: Track) => (t.title ?? t.file_name ?? '').toLowerCase();
+
+/**
+ * An album's running order: disc, then track number, then title to break ties.
+ *
+ * Discs are compared before track numbers so a missing number sinks within its
+ * own disc rather than to the end of the album. A null disc counts as 1 —
+ * single-disc releases routinely leave the tag empty, and treating that as
+ * absent would interleave them with disc 2 of anything that does set it.
+ */
+function albumOrder(a: Track, b: Track, dir: number): number {
+  const da = a.disc_number ?? 1;
+  const db = b.disc_number ?? 1;
+  if (da !== db) return (da - db) * dir;
+
+  const ta = numeric(a.track_number);
+  const tb = numeric(b.track_number);
+  // Untracked files sink regardless of direction, same rule as every other
+  // absent value here.
+  if (ta === null && tb === null) return titleOf(a).localeCompare(titleOf(b), undefined, { numeric: true }) * dir;
+  if (ta === null) return 1;
+  if (tb === null) return -1;
+  if (ta !== tb) return (ta - tb) * dir;
+  return titleOf(a).localeCompare(titleOf(b), undefined, { numeric: true }) * dir;
+}
+
+/**
+ * Order a track list by a leaf field. Untagged tracks sink to the bottom
+ * regardless of direction — they are absent data, not a low value.
+ *
+ * `withinAlbum` switches the title leaf to the album's own running order.
+ * Inside one album "sort by track title" means the order the artist put them
+ * in, not the alphabet — nobody wants Abbey Road opening with "Because". It
+ * applies only to the title leaf: asking for BPM or duration inside an album is
+ * an explicit request for that ordering, so it is left alone.
+ */
+export function sortTracks(
+  tracks: Track[],
+  field: LeafField,
+  order: 'asc' | 'desc',
+  withinAlbum = false
+): Track[] {
   const dir = order === 'desc' ? -1 : 1;
+  if (field === 'title' && withinAlbum) {
+    return [...tracks].sort((a, b) => albumOrder(a, b, dir));
+  }
   return [...tracks].sort((a, b) => {
     const ka = leafKey(a, field);
     const kb = leafKey(b, field);
