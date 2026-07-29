@@ -159,10 +159,7 @@ impl AudioEngine {
         #[cfg(windows)]
         {
             if self.exclusive_enabled {
-                let mut rates = vec![file_sr];
-                if file_sr != self.default_sample_rate {
-                    rates.push(self.default_sample_rate);
-                }
+                let rates = output_rate_candidates(file_sr, self.default_sample_rate);
                 for rate in rates {
                     let fmt = match super::exclusive::probe(
                         self.output_device_id.clone(),
@@ -908,5 +905,88 @@ fn emit_playback_error(app_handle: &Option<tauri::AppHandle>, error: &str, path:
                 "file": filename,
             }),
         );
+    }
+}
+
+/// Output rates to try for a file, best first.
+///
+/// A normal file just asks for its own rate and falls back to the shared
+/// default. DSD is the interesting case: it arrives at 2.8 MHz or more and no
+/// DAC accepts that as PCM, so the first probe always fails and something has
+/// to be chosen. Halving keeps the decimation an integer ratio and stays in the
+/// file's own 44.1 or 48 kHz family, landing DSD64 on 176.4 kHz — what
+/// dedicated DSD players target — rather than dropping to the shared default,
+/// which on a CD-rate system throws away everything DSD was carrying.
+fn output_rate_candidates(file_sr: u32, default_sr: u32) -> Vec<u32> {
+    let mut rates = vec![file_sr];
+    if file_sr > 192_000 {
+        let mut r = file_sr;
+        while r > 192_000 {
+            r /= 2;
+        }
+        while r >= 44_100 {
+            rates.push(r);
+            r /= 2;
+        }
+    }
+    if !rates.contains(&default_sr) {
+        rates.push(default_sr);
+    }
+    rates
+}
+
+#[cfg(test)]
+mod rate_tests {
+    use super::output_rate_candidates;
+
+    #[test]
+    fn ordinary_files_ask_for_their_own_rate_then_the_default() {
+        assert_eq!(output_rate_candidates(44_100, 44_100), vec![44_100]);
+        assert_eq!(output_rate_candidates(48_000, 44_100), vec![48_000, 44_100]);
+        assert_eq!(output_rate_candidates(192_000, 44_100), vec![192_000, 44_100]);
+    }
+
+    // DSD64 is 44100 * 64. 176.4 kHz is a divide by 16 and stays in the 44.1
+    // family; falling back to the CD-rate default would be a divide by 64.
+    #[test]
+    fn dsd64_decimates_to_176_4_not_the_shared_default() {
+        let got = output_rate_candidates(2_822_400, 44_100);
+        assert_eq!(got, vec![2_822_400, 176_400, 88_200, 44_100]);
+        assert!(
+            got.iter().position(|r| *r == 176_400) < got.iter().position(|r| *r == 44_100),
+            "176.4 kHz must be preferred over the shared default"
+        );
+    }
+
+    #[test]
+    fn dsd128_lands_in_the_same_family() {
+        assert_eq!(
+            output_rate_candidates(5_644_800, 44_100),
+            vec![5_644_800, 176_400, 88_200, 44_100]
+        );
+    }
+
+    // The rarer 48 kHz-family DSD must not be dragged into the 44.1 family.
+    #[test]
+    fn dsd_in_the_48k_family_stays_there() {
+        let got = output_rate_candidates(3_072_000, 48_000);
+        assert_eq!(got, vec![3_072_000, 192_000, 96_000, 48_000]);
+    }
+
+    // Every candidate must divide the source exactly — a non-integer ratio
+    // means resampling rather than decimation.
+    #[test]
+    fn every_dsd_candidate_is_an_integer_divisor() {
+        for src in [2_822_400u32, 5_644_800, 3_072_000] {
+            for r in output_rate_candidates(src, 44_100) {
+                if r == src {
+                    continue;
+                }
+                if src % r != 0 {
+                    // The trailing shared default need not divide the source.
+                    assert_eq!(r, 44_100, "{} does not divide {}", r, src);
+                }
+            }
+        }
     }
 }

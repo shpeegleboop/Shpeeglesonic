@@ -128,9 +128,14 @@ export function OutputSettings() {
             </div>
             <div className="text-[11px] text-gray-500 mt-0.5">
               {status.file_sample_rate
-                ? status.resampling
-                  ? `Converting from ${khz(status.file_sample_rate)} — the device is not running at the file's rate.`
-                  : `Matching the file's ${khz(status.file_sample_rate)} — no conversion.`
+                ? // DSD is 1-bit at megahertz rates and no DAC accepts it as PCM,
+                  // so it is always decoded. Calling that "converting" reads as a
+                  // fault when it is simply what DSD playback is.
+                  status.file_sample_rate > 192000
+                  ? `DSD ${khz(status.file_sample_rate)} decoded to PCM. Native DSD needs ASIO or DoP; every player converts it.`
+                  : status.resampling
+                    ? `Converting from ${khz(status.file_sample_rate)} — the device is not running at the file's rate.`
+                    : `Matching the file's ${khz(status.file_sample_rate)} — no conversion.`
                 : 'Nothing playing yet.'}
             </div>
             {declined && (

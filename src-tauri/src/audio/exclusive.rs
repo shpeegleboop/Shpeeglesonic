@@ -480,7 +480,7 @@ mod tests {
             println!("device: {} {}", d.name, if d.is_default { "(default)" } else { "" });
         }
 
-        for rate in [44100u32, 48000, 96000, 192000] {
+        for rate in [44100u32, 48000, 88200, 96000, 176400, 192000, 352800] {
             match probe(None, rate, 2) {
                 Ok(f) => println!(
                     "  {} Hz -> accepted as {} Hz / {} ch / {}-bit",
